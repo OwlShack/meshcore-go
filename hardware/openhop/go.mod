@@ -3,7 +3,7 @@ module github.com/meshcore-go/meshcore-go/hardware/openhop
 go 1.26.7
 
 require (
-	github.com/meshcore-go/meshcore-go v1.5.0
+	github.com/meshcore-go/meshcore-go v1.6.0
 	go.bug.st/serial v1.8.0
 )
 

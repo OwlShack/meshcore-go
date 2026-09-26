@@ -3,7 +3,7 @@ module github.com/meshcore-go/meshcore-go/hardware/sx12xx
 go 1.26.7
 
 require (
-	github.com/meshcore-go/meshcore-go v1.5.0
+	github.com/meshcore-go/meshcore-go v1.6.0
 	periph.io/x/conn/v3 v3.7.3
 )
 
