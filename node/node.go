@@ -83,6 +83,7 @@ type nodeConfig struct {
 	channels         []*meshcore.ChannelEntry
 	maxChannels      int
 	regions          []*meshcore.Region
+	defaultRegion    string
 	tx               nodeTxConfig
 	floodDelay       RetransmitDelayFunc
 	directDelay      RetransmitDelayFunc
@@ -159,6 +160,13 @@ func WithChannels(chs ...*meshcore.ChannelEntry) Option {
 func WithRegions(regions ...*meshcore.Region) Option {
 	return func(c *nodeConfig) {
 		c.regions = append(c.regions, regions...)
+	}
+}
+
+// WithDefaultRegion scopes the node's own floods, including its first advert, to the named region.
+func WithDefaultRegion(name string) Option {
+	return func(c *nodeConfig) {
+		c.defaultRegion = name
 	}
 }
 
@@ -279,6 +287,7 @@ func New(identity meshcore.LocalIdentity, radio Radio, opts ...Option) *Node {
 	for _, r := range cfg.regions {
 		n.regions.Add(r)
 	}
+	n.regions.SetDefault(cfg.defaultRegion)
 	n.router.node = n
 
 	txRadio, ok := radio.(TxRadio)
@@ -509,6 +518,7 @@ func (n *Node) SendGroupText(
 		Path:       []byte{},
 		Payload:    grpBytes,
 	}
+	pkt.SetScope(n.regions.Default())
 
 	if err := n.SendPacket(pkt); err != nil {
 		return err
@@ -578,6 +588,7 @@ func (n *Node) SendTextMessage(
 		} else {
 			pkt.Header = meshcore.MakeHeader(meshcore.RouteTypeFlood, meshcore.PayloadTypeTxtMsg, 0)
 			pkt.Path = []byte{}
+			pkt.SetScope(n.regions.Default())
 		}
 		return pkt, ackCRC, nil
 	}
