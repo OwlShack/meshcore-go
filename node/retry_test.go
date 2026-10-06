@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	meshcore "github.com/meshcore-go/meshcore-go"
+	meshcore "github.com/OwlShack/meshcore-go"
 )
 
 func testGroupPayload(text string) *meshcore.GroupTextPayload {

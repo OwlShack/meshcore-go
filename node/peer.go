@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	meshcore "github.com/meshcore-go/meshcore-go"
+	meshcore "github.com/OwlShack/meshcore-go"
 )
 
 // DefaultMaxPeers is the default maximum number of peers stored in a PeerTable.

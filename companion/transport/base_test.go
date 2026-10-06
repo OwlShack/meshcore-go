@@ -11,7 +11,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/meshcore-go/meshcore-go/companion"
+	"github.com/OwlShack/meshcore-go/companion"
 )
 
 // pipeConn feeds reads through an io.Pipe and exposes writes on a channel.

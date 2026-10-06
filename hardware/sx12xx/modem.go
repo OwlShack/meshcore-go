@@ -19,7 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/meshcore-go/meshcore-go/hardware"
+	"github.com/OwlShack/meshcore-go/hardware"
 )
 
 // Errors returned by Modem.

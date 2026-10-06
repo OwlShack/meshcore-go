@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/meshcore-go/meshcore-go/companion"
+	"github.com/OwlShack/meshcore-go/companion"
 )
 
 type mockReadWriter struct {

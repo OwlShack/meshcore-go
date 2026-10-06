@@ -5,7 +5,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/meshcore-go/meshcore-go/hardware"
+	"github.com/OwlShack/meshcore-go/hardware"
 )
 
 type chunkReader struct{ chunks [][]byte }

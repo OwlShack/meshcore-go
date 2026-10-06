@@ -3,7 +3,7 @@ package node
 import (
 	"sync"
 
-	meshcore "github.com/meshcore-go/meshcore-go"
+	meshcore "github.com/OwlShack/meshcore-go"
 )
 
 // RegionMap is a thread-safe set of regions stored by pointer; treat a Region as immutable once added.

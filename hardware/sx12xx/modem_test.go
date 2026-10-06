@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/meshcore-go/meshcore-go/hardware"
-	"github.com/meshcore-go/meshcore-go/node"
+	"github.com/OwlShack/meshcore-go/hardware"
+	"github.com/OwlShack/meshcore-go/node"
 )
 
 var _ node.Modem = (*Modem)(nil)

@@ -3,7 +3,7 @@ package node
 import (
 	"time"
 
-	meshcore "github.com/meshcore-go/meshcore-go"
+	meshcore "github.com/OwlShack/meshcore-go"
 )
 
 // RouteAction describes what the router decided to do with a received packet.

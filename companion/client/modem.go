@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/meshcore-go/meshcore-go/companion"
+	"github.com/OwlShack/meshcore-go/companion"
 )
 
 // DefaultModemPriority is the default TX-queue priority for outgoing packets.
