@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/ed25519"
+	"crypto/hmac"
+	"crypto/sha256"
 	"errors"
 	"strings"
 	"testing"
@@ -457,6 +459,17 @@ func TestMACThenDecrypt(t *testing.T) {
 		}
 		if decrypted != nil {
 			t.Error("expected nil for wrong key, got data")
+		}
+	})
+
+	t.Run("validly MACed partial block is rejected", func(t *testing.T) {
+		enc := make([]byte, aes.BlockSize+1)
+		mac := hmac.New(sha256.New, key)
+		mac.Write(enc)
+		src := append(mac.Sum(nil)[:cipherMACSize], enc...)
+
+		if _, err := MACThenDecrypt(key, src); !errors.Is(err, ErrNotBlockAligned) {
+			t.Fatalf("error = %v, want ErrNotBlockAligned", err)
 		}
 	})
 
