@@ -22,6 +22,8 @@ var (
 	ErrBadMAC = errors.New("meshcore: mac mismatch")
 	// ErrTooShort is returned when a payload is shorter than its fixed header.
 	ErrTooShort = errors.New("meshcore: data too short")
+	// ErrNotBlockAligned is returned when ciphertext is not a whole number of AES blocks.
+	ErrNotBlockAligned = errors.New("meshcore: ciphertext not block aligned")
 )
 
 // DeriveSharedSecret computes an X25519 shared secret from an Ed25519
@@ -171,6 +173,9 @@ func EncryptThenMAC(sharedSecret []byte, src []byte) ([]byte, error) {
 func MACThenDecrypt(sharedSecret []byte, src []byte) ([]byte, error) {
 	if len(src) <= cipherMACSize {
 		return nil, fmt.Errorf("%w: %d bytes", ErrTooShort, len(src))
+	}
+	if (len(src)-cipherMACSize)%aes.BlockSize != 0 {
+		return nil, fmt.Errorf("%w: %d bytes", ErrNotBlockAligned, len(src)-cipherMACSize)
 	}
 
 	mac := hmac.New(sha256.New, sharedSecret)
