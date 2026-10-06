@@ -491,8 +491,22 @@ type DMSendResult struct {
 	RoundTrip time.Duration
 }
 
+// SendGroupText floods a channel message scoped to the node's default region.
 func (n *Node) SendGroupText(
 	ch *meshcore.ChannelEntry,
+	payload *meshcore.GroupTextPayload,
+	pathHashSize uint8,
+	retryTimeout time.Duration,
+	maxRetries int,
+	onResult func(GroupSendResult),
+) error {
+	return n.SendGroupTextScoped(ch, n.regions.Default(), payload, pathHashSize, retryTimeout, maxRetries, onResult)
+}
+
+// SendGroupTextScoped floods a channel message scoped to scope; nil sends it unscoped.
+func (n *Node) SendGroupTextScoped(
+	ch *meshcore.ChannelEntry,
+	scope *meshcore.Region,
 	payload *meshcore.GroupTextPayload,
 	pathHashSize uint8,
 	retryTimeout time.Duration,
@@ -518,7 +532,7 @@ func (n *Node) SendGroupText(
 		Path:       []byte{},
 		Payload:    grpBytes,
 	}
-	pkt.SetScope(n.regions.Default())
+	pkt.SetScope(scope)
 
 	if err := n.SendPacket(pkt); err != nil {
 		return err
@@ -540,8 +554,24 @@ func (n *Node) SendGroupText(
 	return nil
 }
 
+// SendTextMessage sends a DM whose flood attempts are scoped to the node's default region.
 func (n *Node) SendTextMessage(
 	peer meshcore.Identity,
+	text []byte,
+	flags byte,
+	timestamp time.Time,
+	path []byte,
+	pathHashSize uint8,
+	timeout time.Duration,
+	onResult func(DMSendResult),
+) error {
+	return n.SendTextMessageScoped(peer, n.regions.Default(), text, flags, timestamp, path, pathHashSize, timeout, onResult)
+}
+
+// SendTextMessageScoped sends a DM whose flood attempts are scoped to scope; nil sends them unscoped.
+func (n *Node) SendTextMessageScoped(
+	peer meshcore.Identity,
+	scope *meshcore.Region,
 	text []byte,
 	flags byte,
 	timestamp time.Time,
@@ -588,7 +618,7 @@ func (n *Node) SendTextMessage(
 		} else {
 			pkt.Header = meshcore.MakeHeader(meshcore.RouteTypeFlood, meshcore.PayloadTypeTxtMsg, 0)
 			pkt.Path = []byte{}
-			pkt.SetScope(n.regions.Default())
+			pkt.SetScope(scope)
 		}
 		return pkt, ackCRC, nil
 	}

@@ -582,3 +582,50 @@ func TestNode_DefaultRegionScopesOwnFloods(t *testing.T) {
 		t.Fatalf("sent %d scoped floods and %d direct, want 3 and 1", scoped, direct)
 	}
 }
+
+func TestNode_ScopedSendsIgnoreDefault(t *testing.T) {
+	nz := meshcore.NewRegion("nz")
+	au := meshcore.NewRegion("au")
+	ch := testChannel("scope-test")
+	peer := seedIdentity(0x73).Identity
+
+	cases := []struct {
+		name  string
+		scope *meshcore.Region
+	}{
+		{"explicit region", au},
+		{"nil is unscoped", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			radio := &mockRadio{}
+			n := New(seedIdentity(0x72), radio, WithRegions(nz, au), WithDefaultRegion("nz"), WithChannels(ch))
+			defer n.Stop()
+
+			if err := n.SendGroupTextScoped(ch, c.scope, testGroupPayload("hi"), 1, time.Second, 0, nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := n.SendTextMessageScoped(peer, c.scope, []byte("dm"), 0, time.Now(), nil, 1, time.Second, nil); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(200 * time.Millisecond)
+
+			sent := radio.sentData()
+			if len(sent) != 2 {
+				t.Fatalf("sent %d packets, want 2", len(sent))
+			}
+			for _, data := range sent {
+				pkt := mustPacketFromBytes(t, data)
+				if nz.MatchesPacket(pkt) {
+					t.Errorf("%s used the node default", pkt.PayloadTypeString())
+				}
+				if c.scope == nil && pkt.IsTransport() {
+					t.Errorf("%s scoped, want unscoped", pkt.PayloadTypeString())
+				}
+				if c.scope != nil && !c.scope.MatchesPacket(pkt) {
+					t.Errorf("%s not scoped to %s", pkt.PayloadTypeString(), c.scope.Name)
+				}
+			}
+		})
+	}
+}
