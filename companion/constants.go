@@ -76,6 +76,7 @@ const (
 	CmdSetDefaultFloodScope byte = 63
 	CmdGetDefaultFloodScope byte = 64
 	CmdSendRawPacket        byte = 65
+	CmdRunCLICommand        byte = 66
 )
 
 // Response codes.
@@ -109,6 +110,7 @@ const (
 	RespAllowedRepeatFreq byte = 26
 	RespChannelDataRecv   byte = 27
 	RespDefaultFloodScope byte = 28
+	RespCLIReply          byte = 29
 )
 
 // Push codes (asynchronous firmware notifications, codes >= 0x80).
@@ -174,6 +176,16 @@ const (
 	TxtTypePlain       byte = 0
 	TxtTypeCLIData     byte = 1
 	TxtTypeSignedPlain byte = 2 // text preceded by a 4-byte sender pubkey prefix
+	TxtTypeCLICommand  byte = 3
+)
+
+// Contact flags.
+const (
+	ContactFlagFavourite byte = 0x01
+	ContactFlagTelemBase byte = 0x02
+	ContactFlagTelemLoc  byte = 0x04
+	ContactFlagTelemEnv  byte = 0x08
+	ContactFlagRemoteCLI byte = 0x10 // the contact may run TxtTypeCLICommand on this companion
 )
 
 // Frame size limits.

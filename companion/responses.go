@@ -341,6 +341,10 @@ type DefaultFloodScopeResponse struct {
 	Key  []byte
 }
 
+type CLIReplyResponse struct {
+	Text string
+}
+
 type PushLoginFailResponse struct {
 	PubKeyPrefix [6]byte
 }
@@ -405,6 +409,7 @@ var responseParsers = map[byte]func([]byte) (any, error){
 	PushPathDiscoveryResponse: parser(ParsePushPathDiscoveryResp),
 	PushControlData:           parser(ParsePushControlDataResp),
 	RespDefaultFloodScope:     parser(ParseDefaultFloodScopeResponse),
+	RespCLIReply:              parser(ParseCLIReplyResponse),
 	PushLoginFail:             parser(ParsePushLoginFailResponse),
 	PushContactDeleted:        parser(ParsePushContactDeletedResponse),
 	PushContactsFull:          parser(ParsePushContactsFullResponse),
@@ -1111,6 +1116,10 @@ func ParseDefaultFloodScopeResponse(data []byte) (DefaultFloodScopeResponse, err
 	}
 	copy(resp.Key, data[31:31+16])
 	return resp, nil
+}
+
+func ParseCLIReplyResponse(data []byte) (CLIReplyResponse, error) {
+	return CLIReplyResponse{Text: readCString(data)}, nil
 }
 
 func ParsePushLoginFailResponse(data []byte) (PushLoginFailResponse, error) {

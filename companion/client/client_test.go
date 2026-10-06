@@ -2492,3 +2492,53 @@ func TestAddUpdateContactLayout(t *testing.T) {
 		t.Errorf("type=%d out_path_len=0x%02x name=%q", frame[33], frame[35], frame[100:132])
 	}
 }
+
+func TestRunCLI(t *testing.T) {
+	mt := &mockTransport{}
+	c := New(mt)
+
+	mt.onSend = func(_ []byte) {
+		go mt.fireResponse(companion.Response{
+			Code: companion.RespCLIReply,
+			Data: companion.CLIReplyResponse{Text: "> 22"},
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	reply, err := c.RunCLI(ctx, "get tx")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reply != "> 22" {
+		t.Errorf("reply = %q, want %q", reply, "> 22")
+	}
+
+	mt.mu.Lock()
+	if got := string(mt.sent[0]); got != "\x42get tx" {
+		t.Errorf("sent = %q, want %q", got, "\x42get tx")
+	}
+	mt.mu.Unlock()
+}
+
+func TestRunCLIUnsupported(t *testing.T) {
+	mt := &mockTransport{}
+	c := New(mt)
+
+	mt.onSend = func(_ []byte) {
+		go mt.fireResponse(companion.Response{
+			Code: companion.RespErr,
+			Data: companion.ErrResponse{ErrorCode: companion.ErrCodeUnsupportedCmd, HasErrorCode: true},
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_, err := c.RunCLI(ctx, "get tx")
+	var devErr *DeviceError
+	if !errors.As(err, &devErr) || devErr.Code != companion.ErrCodeUnsupportedCmd {
+		t.Fatalf("err = %v, want DeviceError with code %d", err, companion.ErrCodeUnsupportedCmd)
+	}
+}

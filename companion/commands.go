@@ -661,6 +661,14 @@ func (GetDefaultFloodScopeCommand) ToBytes() []byte {
 	return []byte{CmdGetDefaultFloodScope}
 }
 
+type RunCLICommand struct {
+	Command string
+}
+
+func (c RunCLICommand) ToBytes() []byte {
+	return append([]byte{CmdRunCLICommand}, c.Command...)
+}
+
 type SendRawPacketCommand struct {
 	Priority byte
 	Packet   []byte
