@@ -3,7 +3,7 @@ package companion
 import (
 	"encoding/binary"
 
-	meshcore "github.com/meshcore-go/meshcore-go"
+	meshcore "github.com/OwlShack/meshcore-go"
 )
 
 type AppStartCommand struct {

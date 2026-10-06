@@ -51,7 +51,7 @@ done
 
 echo "Updating submodule go.mod files to ${VERSION}..."
 for module in "${SUBMODULES[@]}"; do
-  sed -i "s|github.com/meshcore-go/meshcore-go v.*|github.com/meshcore-go/meshcore-go ${VERSION}|" \
+  sed -i "s|github.com/OwlShack/meshcore-go v.*|github.com/OwlShack/meshcore-go ${VERSION}|" \
     "${REPO_ROOT}/${module}/go.mod"
   git add "${REPO_ROOT}/${module}/go.mod"
 done

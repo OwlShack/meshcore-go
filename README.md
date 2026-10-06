@@ -55,17 +55,17 @@ meshcore-go/
 
 ```bash
 # Core protocol + companion + client + hardware + node
-go get github.com/meshcore-go/meshcore-go
+go get github.com/OwlShack/meshcore-go
 
 # Transports are separate modules (they bring in go.bug.st/serial)
-go get github.com/meshcore-go/meshcore-go/companion/transport
-go get github.com/meshcore-go/meshcore-go/hardware/transport
+go get github.com/OwlShack/meshcore-go/companion/transport
+go get github.com/OwlShack/meshcore-go/hardware/transport
 
 # SPI radios on a Pi hat are a separate module (brings in periph.io)
-go get github.com/meshcore-go/meshcore-go/hardware/sx12xx
+go get github.com/OwlShack/meshcore-go/hardware/sx12xx
 
 # openHop Modem firmware over USB or TCP is a separate module
-go get github.com/meshcore-go/meshcore-go/hardware/openhop
+go get github.com/OwlShack/meshcore-go/hardware/openhop
 ```
 
 ## Quick Start
@@ -81,8 +81,8 @@ import (
     "log"
     "time"
 
-    "github.com/meshcore-go/meshcore-go/companion/client"
-    "github.com/meshcore-go/meshcore-go/companion/transport"
+    "github.com/OwlShack/meshcore-go/companion/client"
+    "github.com/OwlShack/meshcore-go/companion/transport"
 )
 
 func main() {
@@ -149,7 +149,7 @@ Requests to remote nodes (`SendLogin`, `SendStatusReq`, `SendTelemetryReq`, `Sen
 ### Core protocol only
 
 ```go
-import meshcore "github.com/meshcore-go/meshcore-go"
+import meshcore "github.com/OwlShack/meshcore-go"
 
 pkt, err := meshcore.PacketFromBytes(raw)
 fmt.Println(pkt.PayloadTypeString()) // "TXT_MSG"

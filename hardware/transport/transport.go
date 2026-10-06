@@ -7,7 +7,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/meshcore-go/meshcore-go/hardware"
+	"github.com/OwlShack/meshcore-go/hardware"
 )
 
 var (

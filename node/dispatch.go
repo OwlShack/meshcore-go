@@ -3,7 +3,7 @@ package node
 import (
 	"time"
 
-	meshcore "github.com/meshcore-go/meshcore-go"
+	meshcore "github.com/OwlShack/meshcore-go"
 )
 
 // Bounds taken from firmware Dispatcher::checkRecv.

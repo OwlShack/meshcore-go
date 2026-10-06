@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	meshcore "github.com/meshcore-go/meshcore-go"
+	meshcore "github.com/OwlShack/meshcore-go"
 )
 
 func TestSecretCache_ComputesOnMiss(t *testing.T) {

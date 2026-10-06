@@ -1,9 +1,9 @@
-module github.com/meshcore-go/meshcore-go/hardware/sx12xx
+module github.com/OwlShack/meshcore-go/hardware/sx12xx
 
 go 1.26.7
 
 require (
-	github.com/meshcore-go/meshcore-go v1.6.0
+	github.com/OwlShack/meshcore-go v1.6.0
 	periph.io/x/conn/v3 v3.7.3
 )
 
@@ -13,4 +13,4 @@ require (
 	golang.org/x/crypto v0.56.0 // indirect
 )
 
-replace github.com/meshcore-go/meshcore-go => ../../
+replace github.com/OwlShack/meshcore-go => ../../

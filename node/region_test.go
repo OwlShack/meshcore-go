@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	meshcore "github.com/meshcore-go/meshcore-go"
+	meshcore "github.com/OwlShack/meshcore-go"
 )
 
 func testRegion(name string) *meshcore.Region {
