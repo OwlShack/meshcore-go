@@ -3,6 +3,7 @@ package node
 import (
 	"sync"
 	"testing"
+	"time"
 
 	meshcore "github.com/OwlShack/meshcore-go"
 )
@@ -411,5 +412,173 @@ func TestRegionMap_IsWildcard(t *testing.T) {
 	}
 	if rm.IsWildcard(nil) {
 		t.Error("IsWildcard(nil) = true, want false")
+	}
+}
+
+func TestRegionMap_NameLookupIgnoresHash(t *testing.T) {
+	rm := NewRegionMap()
+	rm.Add(meshcore.NewRegion("nz"))
+	rm.Add(meshcore.NewRegion("#au"))
+
+	if rm.Get("#nz") == nil || rm.Get("au") == nil {
+		t.Fatal("Get should ignore a leading '#'")
+	}
+	if !rm.Remove("#nz") || rm.Get("nz") != nil {
+		t.Fatal("Remove should ignore a leading '#'")
+	}
+}
+
+func TestRegionMap_Default(t *testing.T) {
+	rm := NewRegionMap()
+	nz := meshcore.NewRegion("nz")
+	rm.Add(nz)
+	rm.Add(meshcore.NewRegion("$private"))
+
+	if rm.Default() != nil {
+		t.Fatal("Default() with nothing set should be nil")
+	}
+	rm.SetDefault("missing")
+	if rm.Default() != nil {
+		t.Fatal("Default() naming an unknown region should be nil")
+	}
+	rm.SetDefault("$private")
+	if rm.Default() != nil {
+		t.Fatal("Default() naming a keyless region should be nil")
+	}
+	rm.SetDefault("#nz")
+	if rm.Default() != nz {
+		t.Fatal("Default() should resolve the named region")
+	}
+	rm.Remove("nz")
+	if rm.Default() != nil {
+		t.Fatal("Default() should be nil once its region is removed")
+	}
+}
+
+func TestRegionMap_ReplyScope(t *testing.T) {
+	nz := meshcore.NewRegion("nz")
+	au := meshcore.NewRegion("au")
+	payload := []byte{0x01, 0x02}
+
+	unscoped := makeNonTransportFloodPacket(payload)
+	direct := &meshcore.Packet{Header: meshcore.MakeHeader(meshcore.RouteTypeDirect, meshcore.PayloadTypeTxtMsg, 0), Payload: payload}
+	transportDirect := makeTransportFloodPacket(nz, payload)
+	transportDirect.Header = meshcore.MakeHeader(meshcore.RouteTypeTransportDirect, meshcore.PayloadTypeTxtMsg, 0)
+
+	cases := []struct {
+		name         string
+		req          *meshcore.Packet
+		denyWildcard bool
+		want         *meshcore.Region
+	}{
+		{"request scope reused", makeTransportFloodPacket(nz, payload), false, nz},
+		{"unknown scope falls back to default", makeTransportFloodPacket(meshcore.NewRegion("fr"), payload), false, au},
+		{"allowed unscoped flood stays unscoped", unscoped, false, nil},
+		{"denied unscoped flood falls back to default", unscoped, true, au},
+		{"direct falls back to default", direct, false, au},
+		{"transport direct falls back to default", transportDirect, false, au},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rm := NewRegionMap()
+			rm.Add(nz)
+			rm.Add(au)
+			rm.SetDefault("au")
+			if c.denyWildcard {
+				rm.SetWildcardFlags(meshcore.RegionDenyFlood)
+			}
+			if got := rm.ReplyScope(c.req); got != c.want {
+				t.Errorf("ReplyScope() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestRouter_FloodRelayNeedsRegion(t *testing.T) {
+	nz := meshcore.NewRegion("nz")
+	payload := []byte{0xAA, 0xBB}
+	cases := []struct {
+		name         string
+		pkt          *meshcore.Packet
+		denyWildcard bool
+		relay        bool
+	}{
+		{"known scope relayed", makeTransportFloodPacket(nz, payload), false, true},
+		{"unknown scope dropped", makeTransportFloodPacket(meshcore.NewRegion("fr"), payload), false, false},
+		{"unscoped relayed by default", makeNonTransportFloodPacket(payload), false, true},
+		{"unscoped dropped when wildcard denies flood", makeNonTransportFloodPacket(payload), true, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var sent [][]byte
+			r := newTestRouter(testRouterOpts{
+				identity:     seedIdentity(0x01),
+				allowForward: func(*meshcore.Packet) bool { return true },
+				send: func(data []byte, _ uint8) error {
+					sent = append(sent, append([]byte(nil), data...))
+					return nil
+				},
+			})
+			r.node.regions.Add(nz)
+			if c.denyWildcard {
+				r.node.regions.SetWildcardFlags(meshcore.RegionDenyFlood)
+			}
+
+			routeThenRelay(r, c.pkt)
+			if got := len(sent) == 1; got != c.relay {
+				t.Fatalf("relayed = %v, want %v", got, c.relay)
+			}
+			if c.relay && c.pkt.IsTransport() {
+				out := mustPacketFromBytes(t, sent[0])
+				if !nz.MatchesPacket(out) {
+					t.Errorf("relayed code = %04x, want the region's code kept", out.TransportCode1)
+				}
+			}
+		})
+	}
+}
+
+func TestNode_DefaultRegionScopesOwnFloods(t *testing.T) {
+	nz := meshcore.NewRegion("nz")
+	radio := &mockRadio{}
+	ch := testChannel("scope-test")
+	n := New(seedIdentity(0x70), radio,
+		WithRegions(nz),
+		WithDefaultRegion("nz"),
+		WithChannels(ch),
+		WithAdvertData(meshcore.AdvertAppData{Type: "CHAT", Name: "scoped"}),
+		WithAdvertInterval(time.Hour),
+	)
+	defer n.Stop()
+
+	peer := seedIdentity(0x71).Identity
+	if err := n.SendGroupText(ch, testGroupPayload("hi"), 1, time.Second, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.SendTextMessage(peer, []byte("flood"), 0, time.Now(), nil, 1, time.Second, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.SendTextMessage(peer, []byte("direct"), 0, time.Now(), []byte{}, 1, time.Second, nil); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	var scoped, direct int
+	for _, data := range radio.sentData() {
+		pkt := mustPacketFromBytes(t, data)
+		switch {
+		case pkt.IsRouteDirect():
+			direct++
+			if pkt.IsTransport() {
+				t.Errorf("direct %s was given transport codes", pkt.PayloadTypeString())
+			}
+		case nz.MatchesPacket(pkt):
+			scoped++
+		default:
+			t.Errorf("%s flood sent unscoped, want scoped to nz", pkt.PayloadTypeString())
+		}
+	}
+	if scoped != 3 || direct != 1 {
+		t.Fatalf("sent %d scoped floods and %d direct, want 3 and 1", scoped, direct)
 	}
 }

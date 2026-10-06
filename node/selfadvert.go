@@ -52,6 +52,7 @@ func (n *Node) sendAdvert() {
 		PathLength: meshcore.PathHashSize - 1,
 		Payload:    payload,
 	}
+	pkt.SetScope(n.regions.Default())
 
 	if err := n.SendPacket(pkt); err != nil {
 		n.dispatchError(err)

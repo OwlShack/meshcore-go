@@ -34,6 +34,15 @@ func NewRegionFromHashtag(name string) *Region {
 	}
 }
 
+// NewRegion derives the key as firmware does: a bare name hashes as "#name", and a "$" name gets none.
+func NewRegion(name string) *Region {
+	r := &Region{Name: name}
+	if !strings.HasPrefix(name, "$") {
+		r.Key = DeriveRegionKey(normalizeRegionName(name))
+	}
+	return r
+}
+
 func NewRegionFromKey(name string, key RegionKey) *Region {
 	return &Region{
 		Name: name,
@@ -88,7 +97,21 @@ func (r *Region) CalcTransportCode(pkt *Packet) uint16 {
 }
 
 func (r *Region) MatchesPacket(pkt *Packet) bool {
-	return pkt.IsTransport() && pkt.TransportCode1 == r.CalcTransportCode(pkt)
+	return pkt.IsTransport() && !r.Key.IsZero() && pkt.TransportCode1 == r.CalcTransportCode(pkt)
+}
+
+// SetScope scopes a flood to r, or unscopes it when r is nil or keyless; call it once the payload is final.
+func (p *Packet) SetScope(r *Region) {
+	if !p.IsRouteFlood() {
+		return
+	}
+	p.TransportCode1, p.TransportCode2 = 0, 0
+	if r == nil || r.Key.IsZero() {
+		p.Header = MakeHeader(RouteTypeFlood, p.PayloadType(), p.PayloadVer())
+		return
+	}
+	p.Header = MakeHeader(RouteTypeTransportFlood, p.PayloadType(), p.PayloadVer())
+	p.TransportCode1 = r.CalcTransportCode(p)
 }
 
 func (r *Region) DenyFlood() bool {

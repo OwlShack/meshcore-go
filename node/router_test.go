@@ -52,6 +52,7 @@ func routeThenRelay(r *router, pkt *meshcore.Packet) RouteAction {
 func newTestRouter(opts testRouterOpts) *router {
 	n := &Node{
 		identity: opts.identity,
+		regions:  NewRegionMap(),
 	}
 	n.allowForward = opts.allowForward
 	n.allowPacket = opts.allowPacket

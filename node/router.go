@@ -207,7 +207,7 @@ func (r *router) relayFlood(pkt *meshcore.Packet) {
 		return
 	}
 
-	if !r.canForward(pkt) {
+	if r.node.regions.FindFloodMatch(pkt) == nil || !r.canForward(pkt) {
 		return
 	}
 
