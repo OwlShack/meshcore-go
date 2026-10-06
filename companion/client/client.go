@@ -901,6 +901,19 @@ func (c *Client) GetDefaultFloodScope(ctx context.Context) (companion.DefaultFlo
 	return as[companion.DefaultFloodScopeResponse](resp)
 }
 
+// RunCLI runs a CLI command on the companion and returns its reply text.
+func (c *Client) RunCLI(ctx context.Context, command string) (string, error) {
+	resp, err := c.sendAndWait(ctx,
+		companion.RunCLICommand{Command: command}.ToBytes(),
+		companion.RespCLIReply, companion.RespErr,
+	)
+	if err != nil {
+		return "", err
+	}
+	reply, err := as[companion.CLIReplyResponse](resp)
+	return reply.Text, err
+}
+
 // SendRawPacket sends a fully-formed raw mesh packet at the given priority and waits for Ok.
 func (c *Client) SendRawPacket(ctx context.Context, priority uint8, rawPacket []byte) error {
 	cmd := companion.SendRawPacketCommand{Priority: priority, Packet: rawPacket}

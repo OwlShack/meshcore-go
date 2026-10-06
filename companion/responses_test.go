@@ -249,6 +249,8 @@ func TestParseResponse(t *testing.T) {
 		{name: "push control data", frameData: hexBytes(t, "8ef9d602deadbeef"), wantCode: PushControlData, wantData: PushControlDataResp{SNR: -1.75, RSSI: int8(-42), PathLen: 0x02, Payload: []byte{0xde, 0xad, 0xbe, 0xef}}}, // -7/4 dB
 		{name: "default flood scope null", frameData: []byte{RespDefaultFloodScope}, wantCode: RespDefaultFloodScope, wantData: DefaultFloodScopeResponse{}},
 		{name: "default flood scope named", frameData: append([]byte{RespDefaultFloodScope}, defaultFloodScopePayload...), wantCode: RespDefaultFloodScope, wantData: DefaultFloodScopeResponse{Name: "region1", Key: floodScopeKey}},
+		{name: "cli reply", frameData: append([]byte{RespCLIReply}, "> 22"...), wantCode: RespCLIReply, wantData: CLIReplyResponse{Text: "> 22"}},
+		{name: "cli reply empty", frameData: []byte{RespCLIReply}, wantCode: RespCLIReply, wantData: CLIReplyResponse{}},
 		{name: "push login fail", frameData: hexBytes(t, "8600aabbccddeeff"), wantCode: PushLoginFail, wantData: PushLoginFailResponse{PubKeyPrefix: pushLoginFailPrefix}},
 		{name: "push contact deleted", frameData: append([]byte{PushContactDeleted}, pushContactDeletedKey[:]...), wantCode: PushContactDeleted, wantData: PushContactDeletedResponse{PublicKey: pushContactDeletedKey}},
 		{name: "push contacts full", frameData: []byte{PushContactsFull}, wantCode: PushContactsFull, wantData: PushContactsFullResponse{}},

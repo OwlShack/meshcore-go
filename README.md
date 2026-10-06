@@ -226,13 +226,13 @@ SNR on the wire is quarter-dB; `SNRFromWire` and `PathSNRdB` convert to real dB.
 
 ### Companion protocol (`companion`)
 
-58 commands, 29 responses, 17 pushes. `ParseResponse` dispatches through a code-to-parser table; unknown codes come back with the raw payload. Path-length bytes in advert-path, path-discovery and trace frames are decoded with the firmware's hash-size encoding, and signed plain text exposes the sender prefix separately from the text.
+59 commands, 30 responses, 17 pushes. `ParseResponse` dispatches through a code-to-parser table; unknown codes come back with the raw payload. Path-length bytes in advert-path, path-discovery and trace frames are decoded with the firmware's hash-size encoding, and signed plain text exposes the sender prefix separately from the text.
 
 ### Client (`companion/client`)
 
 One typed method per command, all taking a `context.Context` except `Reboot` and `FactoryReset`, which get no reply. Commands are serialised internally because the firmware answers in order with no correlation id.
 
-- Device: `DeviceQuery`, `AppStart`, `SetDeviceTime`, `SyncDeviceTime`, `GetDeviceTime`, `GetBattAndStorage`, `GetStats`, `Reboot`, `FactoryReset`
+- Device: `DeviceQuery`, `AppStart`, `SetDeviceTime`, `SyncDeviceTime`, `GetDeviceTime`, `GetBattAndStorage`, `GetStats`, `Reboot`, `FactoryReset`, `RunCLI`
 - Contacts: `GetContacts`, `GetContactsSince`, `GetContactByKey`, `AddUpdateContact`, `AddUpdateContactFull`, `RemoveContact`, `ShareContact`, `ExportContact`, `ImportContact`, `ResetPath`, `GetAdvertPath`
 - Messaging: `SendTextMessage`, `SendChannelTextMessage`, `SendChannelData`, `SendChannelDataFlood`, `GetWaitingMessages`
 - Radio and tuning: `SetRadioParams`, `SetTxPower`, `SetTuningParams`, `GetTuningParams`, `GetAllowedRepeatFreq`, `SetPathHashMode`

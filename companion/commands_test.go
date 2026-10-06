@@ -675,6 +675,13 @@ func TestCommandsToBytes(t *testing.T) {
 			wantHex: "40",
 		},
 		{
+			name: "run cli command",
+			build: func() []byte {
+				return RunCLICommand{Command: "get tx"}.ToBytes()
+			},
+			wantHex: "42" + "676574207478",
+		},
+		{
 			name: "send raw packet",
 			build: func() []byte {
 				return SendRawPacketCommand{Priority: 1, Packet: []byte{0xde, 0xad, 0xbe, 0xef}}.ToBytes()
