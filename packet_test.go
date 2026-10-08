@@ -571,6 +571,22 @@ func TestPacketValidate(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "path bytes without hops",
+			pkt: Packet{
+				Header: MakeHeader(RouteTypeDirect, PayloadTypeTxtMsg, 0),
+				Path:   []byte{0xaa, 0xbb},
+			},
+			wantErr: true,
+		},
+		{
+			name: "fewer path bytes than hops",
+			pkt: Packet{
+				PathLength: MakePathLen(2, 2),
+				Path:       []byte{1, 2, 3},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -938,5 +954,37 @@ func TestAppendPathHash_DoesNotAliasPayload(t *testing.T) {
 	}
 	if raw[2] != 1 || pkt.Payload[0] != 1 {
 		t.Fatalf("payload corrupted: raw=%x payload=%x", raw, pkt.Payload)
+	}
+}
+
+func TestSNRToWire(t *testing.T) {
+	cases := []struct {
+		snr  float32
+		want int8
+	}{
+		{5.4, 21},
+		{-5.4, -21},
+		{31.75, 127},
+		{40, 127},
+		{-40, -128},
+	}
+	for _, c := range cases {
+		if got := SNRToWire(c.snr); got != c.want {
+			t.Errorf("SNRToWire(%v) = %d, want %d", c.snr, got, c.want)
+		}
+	}
+}
+
+func TestMakePathLen_RoundTrip(t *testing.T) {
+	for size := uint8(1); size <= 3; size++ {
+		for _, count := range []uint8{0, 1, 21, 63} {
+			got := MakePathLen(size, count)
+			if s, c := PathLenFields(got); s != size || c != count {
+				t.Errorf("MakePathLen(%d, %d) = %#02x, decodes to (%d, %d)", size, count, got, s, c)
+			}
+		}
+	}
+	if got := MakePathLen(2, 5); got != 0x45 {
+		t.Errorf("MakePathLen(2, 5) = %#02x, want 0x45", got)
 	}
 }

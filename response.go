@@ -33,3 +33,12 @@ func (r *Response) VerifyMAC(sharedSecret []byte) bool {
 func (r *Response) Decrypt(sharedSecret []byte) []byte {
 	return macDecrypt(sharedSecret, r.MAC, r.EncryptedPayload)
 }
+
+// NewResponse encrypts plaintext into a RESPONSE payload from self to peer.
+func NewResponse(self LocalIdentity, peer Identity, plaintext []byte, sharedSecret []byte) (*Response, error) {
+	mac, enc, err := macEncrypt(sharedSecret, plaintext)
+	if err != nil {
+		return nil, err
+	}
+	return &Response{Destination: peer.PublicKey()[0], Source: self.PublicKey()[0], MAC: mac, EncryptedPayload: enc}, nil
+}

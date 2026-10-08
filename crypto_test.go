@@ -208,14 +208,10 @@ func TestEncrypt(t *testing.T) {
 		})
 	}
 
-	t.Run("short shared secret panics", func(t *testing.T) {
-		defer func() {
-			if recover() == nil {
-				t.Fatal("expected panic for short shared secret, got nil")
-			}
-		}()
-
-		_, _ = Encrypt([]byte{0x01}, []byte("hello"))
+	t.Run("short shared secret errors", func(t *testing.T) {
+		if _, err := Encrypt([]byte{0x01}, []byte("hello")); err == nil {
+			t.Fatal("expected error for short shared secret")
+		}
 	})
 }
 
@@ -313,14 +309,10 @@ func TestDecrypt(t *testing.T) {
 		}
 	})
 
-	t.Run("short shared secret panics", func(t *testing.T) {
-		defer func() {
-			if recover() == nil {
-				t.Fatal("expected panic for short shared secret, got nil")
-			}
-		}()
-
-		_, _ = Decrypt([]byte{0x01}, []byte("0123456789ABCDEF"))
+	t.Run("short shared secret errors", func(t *testing.T) {
+		if _, err := Decrypt([]byte{0x01}, []byte("0123456789ABCDEF")); err == nil {
+			t.Fatal("expected error for short shared secret")
+		}
 	})
 }
 

@@ -1,6 +1,10 @@
 package meshcore
 
 import (
+	"bytes"
+	"crypto/aes"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"strings"
@@ -369,5 +373,75 @@ func TestGroupTextPayload_EncryptClampsToMaxTextLen(t *testing.T) {
 	got, _ = grp.DecryptStruct(ch.PSK[:])
 	if got.Text != full {
 		t.Fatalf("exact-length text was clamped: %d bytes", len(got.Text))
+	}
+}
+
+func TestGroupTextPayload_EncryptEmptySenderKeepsPrefix(t *testing.T) {
+	ch := NewChannelFromHashtag("nosender")
+	grp, err := (&GroupTextPayload{Timestamp: 1, Text: "hi"}).Encrypt(ch.Hash, ch.PSK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []byte{1, 0, 0, 0, 0, ':', ' ', 'h', 'i'}; !bytes.HasPrefix(grp.Decrypt(ch.PSK), want) {
+		t.Fatalf("plaintext = %q, want prefix %q", grp.Decrypt(ch.PSK), want)
+	}
+}
+
+func TestGroupText_DecryptStructDropsNonPlainType(t *testing.T) {
+	ch := NewChannelFromHashtag("types")
+	for _, flags := range []byte{0x00, 0x03, TxtTypeCLIData << 2, TxtTypeSignedPlain << 2} {
+		enc, err := EncryptThenMAC(ch.PSK, append([]byte{1, 0, 0, 0, flags}, "Bob: hi"...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		grp := &GroupText{ChannelHash: ch.Hash, MAC: [2]byte{enc[0], enc[1]}, EncryptedPayload: enc[2:]}
+		_, err = grp.DecryptStruct(ch.PSK)
+		if plain := flags>>2 == TxtTypePlain; (err == nil) != plain {
+			t.Errorf("flags 0x%02x: err %v, want accepted %v", flags, err, plain)
+		}
+	}
+}
+
+func TestGroupText_256BitChannel(t *testing.T) {
+	psk := make([]byte, 32)
+	for i := range psk {
+		psk[i] = byte(i + 1)
+	}
+	ch, err := NewChannelFromPSK("wide", psk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := sha256.Sum256(psk); ch.Hash != h[0] {
+		t.Fatalf("Hash = 0x%02x, want SHA256 of all 32 bytes 0x%02x", ch.Hash, h[0])
+	}
+	grp, err := (&GroupTextPayload{Timestamp: 5, Sender: "Ana", Text: "kia ora"}).Encrypt(ch.Hash, ch.PSK)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	block, _ := aes.NewCipher(psk[:16])
+	var want [16]byte
+	block.Encrypt(want[:], append([]byte{5, 0, 0, 0, 0}, "Ana: kia ora"...)[:16])
+	mac := hmac.New(sha256.New, psk)
+	mac.Write(grp.EncryptedPayload)
+	if !bytes.Equal(grp.EncryptedPayload[:16], want[:]) || !bytes.Equal(grp.MAC[:], mac.Sum(nil)[:2]) {
+		t.Fatal("want AES-128 under the first 16 bytes and HMAC under all 32")
+	}
+
+	got, err := grp.DecryptStruct(ch.PSK)
+	if err != nil || got.Sender != "Ana" || got.Text != "kia ora" {
+		t.Fatalf("DecryptStruct = %+v, err %v", got, err)
+	}
+	half := append(append([]byte(nil), psk[:16]...), make([]byte, 16)...)
+	if grp.VerifyMAC(half) {
+		t.Fatal("MAC verified without the upper 16 key bytes")
+	}
+}
+
+func TestGroupText_128BitKeyMatchesZeroPadded(t *testing.T) {
+	ch := PublicChannel()
+	grp, _ := (&GroupTextPayload{Timestamp: 1, Sender: "a", Text: "b"}).Encrypt(ch.Hash, ch.PSK)
+	if !grp.VerifyMAC(append(append([]byte(nil), ch.PSK...), make([]byte, 16)...)) {
+		t.Fatal("16-byte key MAC differs from its zero-padded 32-byte form")
 	}
 }

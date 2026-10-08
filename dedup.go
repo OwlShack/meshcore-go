@@ -57,3 +57,16 @@ func (d *DedupCache) MarkSeen(pkt *Packet) {
 	d.hashes[d.hashNext] = h
 	d.hashNext = (d.hashNext + 1) % MaxPacketHashes
 }
+
+// Clear forgets a packet so that it is no longer reported as seen.
+func (d *DedupCache) Clear(pkt *Packet) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	h := pkt.PacketHash()
+	for i := range d.hashes {
+		if d.hashes[i] == h {
+			d.hashes[i] = [PacketHashSize]byte{}
+			return
+		}
+	}
+}

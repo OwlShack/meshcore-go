@@ -313,3 +313,31 @@ func TestRequestRoundTrip(t *testing.T) {
 		t.Errorf("Decrypt() = %q, want %q", gotTrimmed, plaintext)
 	}
 }
+
+func testPeers(t *testing.T) (alice, bob LocalIdentity, shared []byte) {
+	t.Helper()
+	alice, bob = NewLocalIdentityFromSeed([32]byte{1}), NewLocalIdentityFromSeed([32]byte{2})
+	shared, err := alice.SharedSecret(bob.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return alice, bob, shared
+}
+
+func TestNewRequest(t *testing.T) {
+	alice, bob, shared := testPeers(t)
+	plain := []byte{0x10, 0x20, 0x30, 0x40, 0x01}
+	req, err := NewRequest(alice, bob.Identity, plain, shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, _ := req.ToBytes()
+	back, err := RequestFromBytes(wire)
+	if err != nil || back.Destination != bob.PublicKey()[0] || back.Source != alice.PublicKey()[0] {
+		t.Fatalf("RequestFromBytes = %+v, err %v", back, err)
+	}
+	bobShared, _ := bob.SharedSecret(alice.Identity)
+	if got := back.Decrypt(bobShared); len(got) != 16 || !strings.HasPrefix(string(got), string(plain)) {
+		t.Fatalf("Decrypt = %x, want %x zero-padded to 16", got, plain)
+	}
+}

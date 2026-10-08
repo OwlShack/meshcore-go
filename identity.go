@@ -168,8 +168,9 @@ func (li LocalIdentity) PrivateKey() ed25519.PrivateKey {
 	return ed25519.NewKeyFromSeed(li.seed[:])
 }
 
-func (li LocalIdentity) Seed() [ed25519.SeedSize]byte {
-	return li.seed
+// Seed returns the Ed25519 seed; ok is false for an expanded-key identity, which has none.
+func (li LocalIdentity) Seed() (seed [ed25519.SeedSize]byte, ok bool) {
+	return li.seed, li.expanded == nil
 }
 
 // SharedSecret computes an X25519 shared secret between this local identity and a peer.
