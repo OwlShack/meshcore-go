@@ -412,8 +412,8 @@ func (m *Modem) session(report func(error)) bool {
 	}()
 
 	err = m.handshake()
-	report(err)
 	if err != nil {
+		report(err)
 		m.reportError(fmt.Errorf("openhop: handshake failed: %w", err))
 	} else {
 		// Every established session after the first one is a reconnection.
@@ -421,6 +421,7 @@ func (m *Modem) session(report func(error)) bool {
 			m.statReconn.Add(1)
 		}
 		m.ready.Store(true)
+		report(nil)
 		radio := m.RadioConfig()
 		m.log.Info("openhop: modem ready",
 			"freq_hz", radio.FreqHz, "sf", radio.SF,

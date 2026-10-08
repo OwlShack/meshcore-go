@@ -42,6 +42,16 @@ func TestConnectHandshakeOrder(t *testing.T) {
 	}
 }
 
+func TestConnectReturnsOnlyOnceReady(t *testing.T) {
+	for range 200 {
+		m := connect(t, newFakeModem(t), Config{})
+		if !m.Connected() {
+			t.Fatal("Connect returned before the modem was ready")
+		}
+		_ = m.Close()
+	}
+}
+
 func TestConnectWithoutTokenSkipsAuth(t *testing.T) {
 	f := newFakeModem(t)
 	m := connect(t, f, Config{})

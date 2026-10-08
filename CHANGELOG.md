@@ -12,6 +12,14 @@ tests, CI and tooling get no entry, however big the PR, and nothing lists what i
 `### Added`, `### Changed` and `### Fixed`, plus `### Upgrading` when users must change their
 code. `scripts/prepare-release.sh` renames the section for the release.
 
+## Unreleased
+
+### Fixed
+
+- **openHop commands sent straight after `Connect` no longer fail.** `Connect` could return before
+  the modem was ready, so a command issued immediately, such as `SetConfig`, returned
+  `ErrNotConnected`.
+
 ## v1.7.0 - 2026-10-08
 
 Baseline `v1.6.0`.
