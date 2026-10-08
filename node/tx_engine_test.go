@@ -405,3 +405,42 @@ func TestTxEngine_Stats_FailingSinceClearsOnSuccess(t *testing.T) {
 		t.Errorf("after a send went out: %+v, want no failing streak and 1 sent", st)
 	}
 }
+
+func TestTxEngine_BudgetGateUsesMaxFrame(t *testing.T) {
+	done := make(chan struct{})
+	close(done) // stop the loop so only the test drains
+	// 1000 ms covers a 10-byte packet but not half a full frame.
+	for _, tc := range []struct {
+		budgetMs float64
+		want     int32
+	}{{1000, 0}, {meshcore.MaxTransUnit * 10 / 2, 1}} {
+		budget := newAirtimeBudget(1.0, time.Hour, func(l int) uint32 { return uint32(l) * 10 })
+		budget.txBudgetMs = tc.budgetMs
+		var sent atomic.Int32
+		tx := newTxEngine(func([]byte) error { sent.Add(1); return nil }, done, withTxAirtimeBudget(budget))
+		tx.enqueue(make([]byte, 10), 0, 0)
+		tx.drain()
+		if got := sent.Load(); got != tc.want {
+			t.Fatalf("budget %v ms: sent %d, want %d", tc.budgetMs, got, tc.want)
+		}
+	}
+}
+
+func TestTxEngine_Stats_SentByRouteAndAirtime(t *testing.T) {
+	done := make(chan struct{})
+	defer close(done)
+
+	tx := newTxEngine(func([]byte) error { time.Sleep(50 * time.Millisecond); return nil }, done, withTxAirtimeBudget(newAirtimeBudget(1.0, time.Hour, fixedEstimator(10))))
+	tx.enqueue(makeFloodPacket(meshcore.PayloadTypeGrpTxt, []byte{1, 2, 3, 4}), 0, 0)
+	tx.enqueue(makeDirectPacket(meshcore.PayloadTypeTxtMsg, nil, []byte{1, 2, 3, 4, 5}), 0, 0)
+	tx.enqueue(makeDirectPacket(meshcore.PayloadTypeAck, []byte{0x11}, []byte{1, 2, 3, 4}), 0, 0)
+	deadline := time.Now().Add(2 * time.Second)
+	for tx.stats().Sent < 3 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	st := tx.stats()
+	if st.SentFlood != 1 || st.SentDirect != 2 || st.AirtimeMs != 30 {
+		t.Fatalf("SentFlood/SentDirect/AirtimeMs = %d/%d/%d, want 1/2/30", st.SentFlood, st.SentDirect, st.AirtimeMs)
+	}
+}

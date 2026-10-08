@@ -496,7 +496,7 @@ func TestRegionMap_ReplyScope(t *testing.T) {
 
 func TestRouter_FloodRelayNeedsRegion(t *testing.T) {
 	nz := meshcore.NewRegion("nz")
-	payload := []byte{0xAA, 0xBB}
+	payload := []byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE}
 	cases := []struct {
 		name         string
 		pkt          *meshcore.Packet

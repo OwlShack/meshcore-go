@@ -1,9 +1,11 @@
 package hardware
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -853,6 +855,9 @@ func connectedModem(t *testing.T) (*KissModem, *mockTransport) {
 	if err := m.Connect(context.Background()); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
+	// The firmware answers every hardware command, including Connect's signal-report push.
+	mt.injectFrame(makeHwRespFrame(HwResp(HW_CMD_GET_SIGNAL_REPORT), 0))
+	m.Flush()
 	t.Cleanup(func() { m.Close() })
 	return m, mt
 }
@@ -1096,5 +1101,365 @@ func TestRequest_AdoptsAReplyDispatchedAfterTheNextRequestArms(t *testing.T) {
 	}
 	if mv != 256 {
 		t.Errorf("battery = %d mV, want 256: the stale reply is adopted here by design", mv)
+	}
+}
+
+// replyOnSend has the mock firmware answer every following command with frames.
+func replyOnSend(mt *mockTransport, frames ...*KissFrame) {
+	mt.mu.Lock()
+	mt.onSend = func([]byte) {
+		for _, f := range frames {
+			mt.injectFrame(f)
+		}
+	}
+	mt.mu.Unlock()
+}
+
+func lastSent(t *testing.T, mt *mockTransport) *KissFrame {
+	t.Helper()
+	sent := mt.sentFrames()
+	f, err := DecodeFrame(sent[len(sent)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func shortCtx(t *testing.T) context.Context {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// The firmware answers in order, so a send-only command's error arrives before
+// the next request's reply and must not fail it.
+func TestRequest_IgnoresAnEarlierSendOnlyCommandsError(t *testing.T) {
+	m, mt := connectedModem(t)
+	if err := m.SetTxPower(30); err != nil {
+		t.Fatal(err)
+	}
+	replyOnSend(mt,
+		makeHwRespFrame(HW_RESP_ERROR, HW_ERR_NO_CALLBACK),
+		makeHwRespFrame(HwResp(HW_CMD_GET_BATTERY), 0x10, 0x0F))
+	mv, err := m.Battery(shortCtx(t))
+	if err != nil || mv != 3856 {
+		t.Fatalf("Battery = %d, %v; want 3856 - the send-only command's error was adopted", mv, err)
+	}
+}
+
+func TestWaitingSetters_CompleteOnTheirReply(t *testing.T) {
+	ok := makeHwRespFrame(HW_RESP_OK)
+	for _, tc := range []struct {
+		name  string
+		reply *KissFrame
+		call  func(*KissModem, context.Context) error
+	}{
+		{"SetRadioWait", ok, func(m *KissModem, ctx context.Context) error {
+			return m.SetRadioWait(ctx, &RadioConfig{FreqHz: 869525000, BwHz: 250000, SF: 11, CR: 5})
+		}},
+		{"SetTxPowerWait", ok, func(m *KissModem, ctx context.Context) error { return m.SetTxPowerWait(ctx, 22) }},
+		{"RebootWait", ok, func(m *KissModem, ctx context.Context) error { return m.RebootWait(ctx) }},
+		{"SetSignalReportWait", makeHwRespFrame(HwResp(HW_CMD_GET_SIGNAL_REPORT), 1),
+			func(m *KissModem, ctx context.Context) error { return m.SetSignalReportWait(ctx, true) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, mt := connectedModem(t)
+			replyOnSend(mt, tc.reply)
+			if err := tc.call(m, shortCtx(t)); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// HW_RESP_OK names no command, so an earlier send-only setter's OK is not the
+// answer to the next waiting setter.
+func TestSetTxPowerWait_DoesNotAdoptAnEarlierOK(t *testing.T) {
+	m, mt := connectedModem(t)
+	if err := m.SetRadio(&RadioConfig{SF: 11, CR: 5}); err != nil {
+		t.Fatal(err)
+	}
+	replyOnSend(mt, makeHwRespFrame(HW_RESP_OK), makeHwRespFrame(HW_RESP_ERROR, HW_ERR_NO_CALLBACK))
+	if err := m.SetTxPowerWait(shortCtx(t), 22); !errors.Is(err, ErrHwRequestFailed) {
+		t.Fatalf("SetTxPowerWait = %v, want ErrHwRequestFailed", err)
+	}
+}
+
+func TestTypedRequests_EncodeAndDecode(t *testing.T) {
+	key, sig := [32]byte{0xA1, 31: 0xA2}, [64]byte{0xB1, 63: 0xB2}
+	b32 := bytes.Repeat([]byte{7}, 32)
+	b64 := bytes.Repeat([]byte{9}, 64)
+	cat := func(parts ...[]byte) []byte { return bytes.Join(parts, nil) }
+	for _, tc := range []struct {
+		name   string
+		cmd    byte
+		reply  []byte
+		call   func(*KissModem, context.Context) (any, error)
+		params []byte
+		want   any
+	}{
+		{"PublicKey", HW_CMD_GET_IDENTITY, b32,
+			func(m *KissModem, ctx context.Context) (any, error) { return m.PublicKey(ctx) }, nil, [32]byte(b32)},
+		{"Random", HW_CMD_GET_RANDOM, []byte{1, 2, 3},
+			func(m *KissModem, ctx context.Context) (any, error) { return m.Random(ctx, 3) }, []byte{3}, []byte{1, 2, 3}},
+		{"Verify", HW_CMD_VERIFY_SIGNATURE, []byte{1},
+			func(m *KissModem, ctx context.Context) (any, error) { return m.Verify(ctx, key, sig, []byte("hi")) },
+			cat(key[:], sig[:], []byte("hi")), true},
+		{"Sign", HW_CMD_SIGN_DATA, b64,
+			func(m *KissModem, ctx context.Context) (any, error) { return m.Sign(ctx, []byte("hi")) }, []byte("hi"), [64]byte(b64)},
+		{"Encrypt", HW_CMD_ENCRYPT_DATA, []byte{0xEE, 0xEF},
+			func(m *KissModem, ctx context.Context) (any, error) { return m.Encrypt(ctx, key, []byte{5}) },
+			cat(key[:], []byte{5}), []byte{0xEE, 0xEF}},
+		{"Decrypt", HW_CMD_DECRYPT_DATA, []byte{5},
+			func(m *KissModem, ctx context.Context) (any, error) {
+				return m.Decrypt(ctx, key, []byte{0xEE, 0xEF, 0xF0})
+			},
+			cat(key[:], []byte{0xEE, 0xEF, 0xF0}), []byte{5}},
+		{"SharedSecret", HW_CMD_KEY_EXCHANGE, b32,
+			func(m *KissModem, ctx context.Context) (any, error) { return m.SharedSecret(ctx, key) }, key[:], [32]byte(b32)},
+		{"Hash", HW_CMD_HASH, b32,
+			func(m *KissModem, ctx context.Context) (any, error) { return m.Hash(ctx, []byte("hi")) }, []byte("hi"), [32]byte(b32)},
+		{"Airtime", HW_CMD_GET_AIRTIME, []byte{0x2C, 0x01, 0, 0},
+			func(m *KissModem, ctx context.Context) (any, error) { return m.Airtime(ctx, 200) }, []byte{200}, 300 * time.Millisecond},
+		{"Sensors", HW_CMD_GET_SENSORS, []byte{1, 0x74, 0x01, 0x9A},
+			func(m *KissModem, ctx context.Context) (any, error) { return m.Sensors(ctx, 0x01) },
+			[]byte{0x01}, []byte{1, 0x74, 0x01, 0x9A}},
+		{"SignalReport", HW_CMD_GET_SIGNAL_REPORT, []byte{1},
+			func(m *KissModem, ctx context.Context) (any, error) { return m.SignalReport(ctx) }, nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, mt := connectedModem(t)
+			replyOnSend(mt, makeHwRespFrame(HwResp(tc.cmd), tc.reply...))
+			got, err := tc.call(m, shortCtx(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+			if sent := lastSent(t, mt).Data; !bytes.Equal(sent, append([]byte{tc.cmd}, tc.params...)) {
+				t.Errorf("sent % X, want command 0x%02X with % X", sent, tc.cmd, tc.params)
+			}
+		})
+	}
+}
+
+func TestTypedRequests_RejectBadInput(t *testing.T) {
+	m, mt := connectedModem(t)
+	before := len(mt.sentFrames())
+	if _, err := m.Random(context.Background(), 65); err == nil {
+		t.Error("Random(65) accepted")
+	}
+	if _, err := m.Airtime(context.Background(), 256); !errors.Is(err, ErrPacketSize) {
+		t.Errorf("Airtime(256) = %v, want ErrPacketSize", err)
+	}
+	if n := len(mt.sentFrames()); n != before {
+		t.Errorf("rejected input reached the transport: %d frames", n-before)
+	}
+	replyOnSend(mt, makeHwRespFrame(HwResp(HW_CMD_GET_IDENTITY), 1, 2, 3))
+	if _, err := m.PublicKey(shortCtx(t)); err == nil {
+		t.Error("PublicKey accepted a 3-byte reply")
+	}
+}
+
+func TestKissSetters_SendFirmwareUnits(t *testing.T) {
+	mt := newMockTransport()
+	m := NewKissModem(mt)
+	defer m.Close()
+	for _, tc := range []struct {
+		send func() error
+		cmd  byte
+		val  byte
+	}{
+		{func() error { return m.SetTxDelay(2550 * time.Millisecond) }, KISS_CMD_TXDELAY, 255},
+		{func() error { return m.SetSlotTime(100 * time.Millisecond) }, KISS_CMD_SLOTTIME, 10},
+		{func() error { return m.SetPersistence(255) }, KISS_CMD_PERSISTENCE, 255},
+		{func() error { return m.SetFullDuplex(true) }, KISS_CMD_FULLDUPLEX, 1},
+	} {
+		if err := tc.send(); err != nil {
+			t.Fatal(err)
+		}
+		if f := lastSent(t, mt); f.Command != tc.cmd || !bytes.Equal(f.Data, []byte{tc.val}) {
+			t.Errorf("sent cmd %d % X, want cmd %d %02X", f.Command, f.Data, tc.cmd, tc.val)
+		}
+	}
+	if err := m.SetTxDelay(2560 * time.Millisecond); err == nil {
+		t.Error("SetTxDelay(2560ms) accepted")
+	}
+}
+
+// A raised TXDELAY lengthens the firmware's TX, so the TX_DONE wait must follow it.
+func TestModem_TxWaitFollowsTxDelay(t *testing.T) {
+	m := NewKissModem(newMockTransport(), WithTxAirtimeEstimator(func(int) uint32 { return 100 }))
+	defer m.Close()
+	base := m.txWait(5)
+	if err := m.SetTxDelay(2 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := m.txWait(5), base+1500*time.Millisecond; got != want {
+		t.Errorf("txWait after SetTxDelay(2s) = %v, want %v", got, want)
+	}
+	if err := m.SendKissCommand(KISS_CMD_TXDELAY, []byte{100}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := m.txWait(5), base+500*time.Millisecond; got != want {
+		t.Errorf("txWait after SendKissCommand(TXDELAY, 100) = %v, want %v", got, want)
+	}
+}
+
+// Answers lost with the old connection must not leave a request's error looking like an earlier command's.
+func TestRequest_ReconnectForgetsUnansweredCommands(t *testing.T) {
+	m, mt := connectedModem(t)
+	if err := m.SetTxPower(22); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mt.injectFrame(makeHwRespFrame(HwResp(HW_CMD_GET_SIGNAL_REPORT), 0))
+	replyOnSend(mt, makeHwRespFrame(HW_RESP_ERROR, HW_ERR_NO_CALLBACK))
+	if _, err := m.MCUTemp(shortCtx(t)); !errors.Is(err, ErrHwRequestFailed) {
+		t.Fatalf("MCUTemp = %v, want ErrHwRequestFailed", err)
+	}
+}
+
+// Persistence and slot time stretch the firmware's wait for a clear channel, so the TX_DONE wait must follow them.
+func TestModem_TxWaitFollowsCSMA(t *testing.T) {
+	m := NewKissModem(newMockTransport(), WithTxAirtimeEstimator(func(int) uint32 { return 100 }))
+	defer m.Close()
+	fixed := 500*time.Millisecond + 200*time.Millisecond*3/2 + time.Second
+	if err := m.SetPersistence(0); err != nil {
+		t.Fatal(err)
+	}
+	slow := m.txWait(5) - fixed
+	if slow < 256*100*time.Millisecond {
+		t.Errorf("CSMA wait at persistence 0 = %v, below the firmware's mean of 25.6s", slow)
+	}
+	if err := m.SendKissCommand(KISS_CMD_SLOTTIME, []byte{1}); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.txWait(5) - fixed; got != slow/10 {
+		t.Errorf("CSMA wait with 10 ms slots = %v, want %v", got, slow/10)
+	}
+	if err := m.SetFullDuplex(true); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.txWait(5); got != fixed {
+		t.Errorf("txWait in full duplex = %v, want %v", got, fixed)
+	}
+	if err := m.SendKissCommand(KISS_CMD_FULLDUPLEX, []byte{0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SendKissCommand(KISS_CMD_PERSISTENCE, []byte{255}); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.txWait(5); got != fixed {
+		t.Errorf("txWait at persistence 255 = %v, want %v", got, fixed)
+	}
+}
+
+// Parallel workers dispatch answers out of wire order, which must not misnumber them.
+func TestRequest_CountsAnswersInWireOrderWithHandlerWorkers(t *testing.T) {
+	mt := newMockTransport()
+	m := NewKissModem(mt, WithHandlerWorkers(4))
+	t.Cleanup(func() { m.Close() })
+	release := make(chan struct{})
+	m.SetFrameHandler(func(f *KissFrame) {
+		if len(f.Data) > 0 && f.Data[0] == HwResp(HW_CMD_GET_BATTERY) {
+			<-release
+		}
+	})
+	seen := make(chan struct{}, 1)
+	m.OnHwResponse(HwResp(HW_CMD_GET_BATTERY), func(byte, []byte) { seen <- struct{}{} })
+	replyOnSend(mt, makeHwRespFrame(HwResp(HW_CMD_GET_BATTERY), 0x10, 0x0F))
+	if err := m.GetBattery(); err != nil {
+		t.Fatal(err)
+	}
+	replyOnSend(mt, makeHwRespFrame(HW_RESP_OK))
+	err := m.SetTxPowerWait(shortCtx(t), 22)
+	close(release)
+	if err != nil {
+		t.Fatalf("SetTxPowerWait = %v; its OK was counted before the battery answer", err)
+	}
+	select {
+	case <-seen:
+	case <-time.After(time.Second):
+		t.Error("OnHwResponse handler never saw the battery answer")
+	}
+}
+
+// blockDispatch parks the inline dispatch goroutine in a data handler until the returned func is called.
+func blockDispatch(t *testing.T, m *KissModem, mt *mockTransport) func() {
+	t.Helper()
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	m.SetDataHandler(func([]byte, float32, int8, bool) {
+		once.Do(func() { close(entered); <-release })
+	})
+	mt.injectFrame(makeDataFrame([]byte{1}))
+	<-entered
+	return func() { close(release); m.Flush() }
+}
+
+// An answer dropped from a full inbound queue must still be counted.
+func TestRequest_CountsAnswersDroppedFromTheInboundQueue(t *testing.T) {
+	mt := newMockTransport()
+	m := NewKissModem(mt, WithInboundBuffer(1))
+	t.Cleanup(func() { m.Close() })
+	unblock := blockDispatch(t, m, mt)
+	if err := m.GetBattery(); err != nil {
+		t.Fatal(err)
+	}
+	mt.injectFrame(makeHwRespFrame(HwResp(HW_CMD_GET_BATTERY), 0x10, 0x0F))
+	mt.injectFrame(makeDataFrame([]byte{2}))
+	unblock()
+	if m.Stats().InboundDroppedOldest == 0 {
+		t.Fatal("battery answer was not dropped")
+	}
+	replyOnSend(mt, makeHwRespFrame(HW_RESP_OK))
+	for i := range 3 {
+		if err := m.SetTxPowerWait(shortCtx(t), 22); err != nil {
+			t.Fatalf("SetTxPowerWait %d = %v", i, err)
+		}
+	}
+}
+
+func TestRequest_FromAnInlineHandler(t *testing.T) {
+	mt := newMockTransport()
+	m := NewKissModem(mt)
+	t.Cleanup(func() { m.Close() })
+	got := make(chan error, 1)
+	m.SetDataHandler(func([]byte, float32, int8, bool) {
+		_, err := m.Battery(shortCtx(t))
+		got <- err
+	})
+	replyOnSend(mt, makeHwRespFrame(HwResp(HW_CMD_GET_BATTERY), 0x10, 0x0F))
+	mt.injectFrame(makeDataFrame([]byte{1}))
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Fatalf("Battery from a data handler = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler never returned")
+	}
+}
+
+// A command the transport failed to write is never answered, so it must not hold a position.
+func TestRequest_FailedSendHoldsNoPosition(t *testing.T) {
+	tr := newNotifiedTransport()
+	m := NewKissModem(tr)
+	t.Cleanup(func() { m.Close() })
+	tr.sendErr = errors.New("write deadline exceeded")
+	if err := m.SetTxPower(22); err == nil {
+		t.Fatal("SetTxPower succeeded on a failing transport")
+	}
+	if _, err := m.Battery(shortCtx(t)); err == nil {
+		t.Fatal("Battery succeeded on a failing transport")
+	}
+	tr.sendErr = nil
+	replyOnSend(tr.mockTransport, makeHwRespFrame(HW_RESP_OK))
+	if err := m.SetTxPowerWait(shortCtx(t), 22); err != nil {
+		t.Fatalf("SetTxPowerWait after failed sends = %v", err)
 	}
 }

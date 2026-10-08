@@ -224,3 +224,32 @@ func TestNode_WithMaxPeers(t *testing.T) {
 		t.Errorf("maxPeers = %d, want 5", n.Peers().maxPeers)
 	}
 }
+
+func TestNode_AdvertWithoutNameNotLearned(t *testing.T) {
+	other := seedIdentity(0x02)
+	for name, appData := range map[string][]byte{
+		"no name":     {meshcore.AdvertTypeChat},
+		"unparseable": {meshcore.AdvertTypeChat | meshcore.AdvertLatLonMask, 0x01},
+	} {
+		radio := &mockRadio{}
+		n := New(seedIdentity(0x01), radio)
+		delivered := false
+		n.OnPacket(meshcore.PayloadTypeAdvert, func(*meshcore.Packet) { delivered = true })
+
+		adv := &meshcore.Advert{PublicKey: other.Identity, Timestamp: 100, RawAppData: appData}
+		adv.SignWith(other)
+		payload, err := adv.ToBytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		radio.inject(makeFloodPacket(meshcore.PayloadTypeAdvert, payload))
+
+		if !delivered {
+			t.Errorf("%s: advert not delivered to handlers", name)
+		}
+		if n.Peers().Count() != 0 {
+			t.Errorf("%s: peer learned, want none", name)
+		}
+		n.Stop()
+	}
+}

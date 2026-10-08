@@ -134,3 +134,20 @@ func TestDedup_MarkSeen_ACK(t *testing.T) {
 		t.Fatal("HasSeen() = false after MarkSeen(), want true")
 	}
 }
+
+func TestDedup_Clear(t *testing.T) {
+	var d DedupCache
+	pkt, other := dedupPacket([]byte{0x01}), dedupPacket([]byte{0x02})
+	d.MarkSeen(pkt)
+	d.MarkSeen(other)
+	d.Clear(pkt)
+	if d.Contains(pkt) {
+		t.Fatal("Contains() = true after Clear, want false")
+	}
+	if !d.Contains(other) {
+		t.Fatal("Clear removed an unrelated packet")
+	}
+	if d.HasSeen(pkt) {
+		t.Fatal("HasSeen() = true after Clear, want false")
+	}
+}

@@ -153,9 +153,9 @@ func TestCommandsToBytes(t *testing.T) {
 		{
 			name: "remove contact",
 			build: func() []byte {
-				return RemoveContactCommand{PubKeyPrefix: [6]byte{0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6}}.ToBytes()
+				return RemoveContactCommand{PublicKey: [32]byte{0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 31: 0xff}}.ToBytes()
 			},
-			wantHex: "0fa1a2a3a4a5a6",
+			wantHex: "0fa1a2a3a4a5a6" + strings.Repeat("00", 25) + "ff",
 		},
 		{
 			name: "get channel idx 0",
@@ -229,7 +229,14 @@ func TestCommandsToBytes(t *testing.T) {
 			build: func() []byte {
 				return SetRadioParamsCommand{Frequency: 915000000, Bandwidth: 500000, SpreadFactor: 7, CodingRate: 5}.ToBytes()
 			},
-			wantHex: "0bc0ca893620a107000705",
+			wantHex: "0bc0ca893620a10700070500",
+		},
+		{
+			name: "set radio params repeat",
+			build: func() []byte {
+				return SetRadioParamsCommand{Frequency: 869525, Bandwidth: 250000, SpreadFactor: 11, CodingRate: 5, Repeat: true}.ToBytes()
+			},
+			wantHex: "0b" + "95440d00" + "90d00300" + "0b0501",
 		},
 		{
 			name: "set tx power",
@@ -319,6 +326,20 @@ func TestCommandsToBytes(t *testing.T) {
 				return SendRawDataCommand{Path: []byte{0xa1, 0xa2}, RawData: []byte{0xf0, 0x0d}}.ToBytes()
 			},
 			wantHex: "1902a1a2f00d",
+		},
+		{
+			name: "send raw data 2-byte hashes",
+			build: func() []byte {
+				return SendRawDataCommand{Path: []byte{0xa1, 0xa2, 0xb1, 0xb2}, PathHashSize: 2, RawData: []byte{0xf0, 0x0d}}.ToBytes()
+			},
+			wantHex: "1942a1a2b1b2f00d",
+		},
+		{
+			name: "send raw data 3-byte hashes",
+			build: func() []byte {
+				return SendRawDataCommand{Path: []byte{1, 2, 3, 4, 5, 6, 7, 8, 9}, PathHashSize: 3, RawData: []byte{0xf0}}.ToBytes()
+			},
+			wantHex: "1983010203040506070809f0",
 		},
 		{
 			name: "send login",
@@ -421,6 +442,20 @@ func TestCommandsToBytes(t *testing.T) {
 				return SetOtherParamsCommand{ManualAddContacts: 1}.ToBytes()
 			},
 			wantHex: "2601",
+		},
+		{
+			name: "set other params extended",
+			build: func() []byte {
+				return SetOtherParamsCommand{ManualAddContacts: 1, HasExtended: true, TelemetryModeBase: 3, TelemetryModeLoc: 2, TelemetryModeEnv: 1, AdvertLocPolicy: 1, MultiAcks: 2}.ToBytes()
+			},
+			wantHex: "26011b0102",
+		},
+		{
+			name: "send self telemetry req",
+			build: func() []byte {
+				return SendTelemetryReqCommand{Self: true}.ToBytes()
+			},
+			wantHex: "27000000",
 		},
 		{
 			name: "send telemetry req",
@@ -598,6 +633,13 @@ func TestCommandsToBytes(t *testing.T) {
 			name: "send channel data 2-byte hashes",
 			build: func() []byte {
 				return SendChannelDataCommand{ChannelIdx: 1, PathLen: 0x42, Path: []byte{0xa1, 0xa2, 0xb1, 0xb2}, DataType: 0x0001, Payload: []byte{0x01}}.ToBytes()
+			},
+			wantHex: "3e0142a1a2b1b2010001",
+		},
+		{
+			name: "send channel data 2-byte hashes derived",
+			build: func() []byte {
+				return SendChannelDataCommand{ChannelIdx: 1, PathHashSize: 2, Path: []byte{0xa1, 0xa2, 0xb1, 0xb2}, DataType: 0x0001, Payload: []byte{0x01}}.ToBytes()
 			},
 			wantHex: "3e0142a1a2b1b2010001",
 		},

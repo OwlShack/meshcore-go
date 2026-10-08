@@ -5,8 +5,14 @@ import (
 	"crypto/ed25519"
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"unicode/utf8"
 )
+
+// IsValidAdvertName reports whether name avoids the characters firmware refuses in a node name.
+func IsValidAdvertName(name string) bool {
+	return !strings.ContainsAny(name, `[]\:,?*`)
+}
 
 // TruncateUTF8 returns the longest prefix of s within n bytes that ends on a rune boundary.
 func TruncateUTF8(s string, n int) string {
@@ -23,12 +29,13 @@ func TruncateUTF8(s string, n int) string {
 }
 
 type AdvertAppData struct {
-	Type  string
-	Name  string
-	Lat   int32  // Little Endian
-	Lon   int32  // Little Endian
-	Feat1 uint16 // Little Endian
-	Feat2 uint16 // Little Endian
+	Type    string // NONE, CHAT, REPEATER, ROOM or SENSOR; empty for other types
+	RawType byte   // numeric type 5-15 that Type cannot name; ToBytes errors if it disagrees with a set Type
+	Name    string
+	Lat     int32  // Little Endian
+	Lon     int32  // Little Endian
+	Feat1   uint16 // Little Endian
+	Feat2   uint16 // Little Endian
 
 	// HasLocation forces the LATLON flag on encode even when Lat and Lon are both 0.
 	HasLocation bool
@@ -48,8 +55,16 @@ func (a *AdvertAppData) ToBytes() ([]byte, error) {
 		typeByte = AdvertTypeRoom
 	case "SENSOR":
 		typeByte = AdvertTypeSensor
+	case "":
+		if a.RawType > 0x0F {
+			return nil, fmt.Errorf("meshcore: advert type %d out of range", a.RawType)
+		}
+		typeByte = a.RawType
 	default:
 		return nil, fmt.Errorf("unknown advert type: %q", a.Type)
+	}
+	if a.RawType != 0 && a.RawType != typeByte {
+		return nil, fmt.Errorf("meshcore: advert Type %q disagrees with RawType %d", a.Type, a.RawType)
 	}
 
 	flags := typeByte
@@ -106,7 +121,6 @@ func AdvertAppDataFromBytes(data []byte) (*AdvertAppData, error) {
 	if flagsErr != nil {
 		return nil, flagsErr
 	}
-
 	switch flags & 0x0F {
 	case AdvertTypeNone:
 		advertAppData.Type = "NONE"
@@ -118,6 +132,8 @@ func AdvertAppDataFromBytes(data []byte) (*AdvertAppData, error) {
 		advertAppData.Type = "ROOM"
 	case AdvertTypeSensor:
 		advertAppData.Type = "SENSOR"
+	default:
+		advertAppData.RawType = flags & 0x0F
 	}
 
 	if flags&AdvertLatLonMask > 0 {
@@ -157,6 +173,7 @@ type Advert struct {
 	RawAppData []byte
 
 	parsedAppData AdvertAppData
+	appDataErr    error
 }
 
 func AdvertFromBytes(data []byte) (*Advert, error) {
@@ -181,16 +198,12 @@ func AdvertFromBytes(data []byte) (*Advert, error) {
 
 	advert.RawAppData = buffer.Bytes()
 
-	if len(advert.RawAppData) > MaxAdvertDataSize {
-		return nil, fmt.Errorf("advert app data too large: %d bytes, max %d", len(advert.RawAppData), MaxAdvertDataSize)
-	}
-
 	if len(advert.RawAppData) > 0 {
-		parsedAppData, err := AdvertAppDataFromBytes(advert.RawAppData)
-		if err != nil {
-			return nil, err
+		if parsedAppData, err := AdvertAppDataFromBytes(advert.signedAppData()); err == nil {
+			advert.parsedAppData = *parsedAppData
+		} else {
+			advert.appDataErr = fmt.Errorf("meshcore: advert app data: %w", err)
 		}
-		advert.parsedAppData = *parsedAppData
 	}
 
 	return advert, nil
@@ -230,6 +243,11 @@ func (a *Advert) AppData() AdvertAppData {
 	return a.parsedAppData
 }
 
+// AppDataErr returns why AdvertFromBytes could not parse the app data, leaving AppData zero, or nil.
+func (a *Advert) AppDataErr() error {
+	return a.appDataErr
+}
+
 func (a *Advert) ToBytes() ([]byte, error) {
 	buffer := bytes.NewBuffer(nil)
 
@@ -264,7 +282,12 @@ func (a *Advert) SignWith(id LocalIdentity) {
 // signedData is pubkey ‖ little-endian timestamp ‖ app data.
 func (a *Advert) signedData() []byte {
 	d := binary.LittleEndian.AppendUint32(a.PublicKey.PublicKeyBytes(), a.Timestamp)
-	return append(d, a.RawAppData...)
+	return append(d, a.signedAppData()...)
+}
+
+// signedAppData is the app data the signature covers, at most MaxAdvertDataSize bytes.
+func (a *Advert) signedAppData() []byte {
+	return a.RawAppData[:min(len(a.RawAppData), MaxAdvertDataSize)]
 }
 
 func (a *Advert) Verify() bool {

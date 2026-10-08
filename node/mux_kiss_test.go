@@ -10,6 +10,11 @@ import (
 	"github.com/OwlShack/meshcore-go/hardware"
 )
 
+var (
+	_ Modem        = (*hardware.KissModem)(nil)
+	_ DeadNotifier = (*hardware.KissModem)(nil)
+)
+
 type kissTestTransport struct {
 	handler func(*hardware.KissFrame)
 	dead    chan struct{}

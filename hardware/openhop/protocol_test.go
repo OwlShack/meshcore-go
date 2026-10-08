@@ -179,6 +179,14 @@ func TestRadioConfigValidate(t *testing.T) {
 	if shorthand.CR != 7 {
 		t.Fatalf("coding rate shorthand = %d, want 7", shorthand.CR)
 	}
+	if shorthand.SyncWord != MeshCoreSyncWord {
+		t.Fatalf("unset sync word = %#x, want MeshCoreSyncWord", shorthand.SyncWord)
+	}
+	public := base
+	public.SyncWord = 0x34
+	if err := (&public).Validate(); err != nil || public.SyncWord != 0x34 {
+		t.Fatalf("explicit sync word changed to %#x (err %v)", public.SyncWord, err)
+	}
 
 	for name, mutate := range map[string]func(*RadioConfig){
 		"no frequency": func(c *RadioConfig) { c.FreqHz = 0 },

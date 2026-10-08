@@ -40,3 +40,11 @@ func TestLoRaAirtimeEstimator_CRConventions(t *testing.T) {
 		}
 	}
 }
+
+func TestPreambleForSF(t *testing.T) {
+	for sf, want := range map[uint8]uint16{5: 32, 7: 32, 8: 32, 9: 16, 11: 16, 12: 16} {
+		if got := PreambleForSF(sf); got != want {
+			t.Errorf("PreambleForSF(%d) = %d, want %d", sf, got, want)
+		}
+	}
+}

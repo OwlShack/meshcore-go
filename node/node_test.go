@@ -3,6 +3,7 @@ package node
 import (
 	"bytes"
 	"crypto/ed25519"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -93,17 +94,17 @@ func TestNode_HandlerDispatch(t *testing.T) {
 	n := New(seedIdentity(0x01), radio)
 
 	var received []*meshcore.Packet
-	n.OnPacket(meshcore.PayloadTypeAdvert, func(pkt *meshcore.Packet) {
+	n.OnPacket(meshcore.PayloadTypeGrpTxt, func(pkt *meshcore.Packet) {
 		received = append(received, pkt)
 	})
 
-	radio.inject(makeFloodPacket(meshcore.PayloadTypeAdvert, []byte{0x01, 0x02}))
+	radio.inject(makeFloodPacket(meshcore.PayloadTypeGrpTxt, []byte{0x01, 0x02, 0x03, 0x04}))
 
 	if len(received) != 1 {
 		t.Fatalf("expected 1 packet, got %d", len(received))
 	}
-	if received[0].PayloadType() != meshcore.PayloadTypeAdvert {
-		t.Errorf("payload type = %d, want ADVERT", received[0].PayloadType())
+	if received[0].PayloadType() != meshcore.PayloadTypeGrpTxt {
+		t.Errorf("payload type = %d, want GRP_TXT", received[0].PayloadType())
 	}
 }
 
@@ -112,10 +113,10 @@ func TestNode_MultipleHandlersSameType(t *testing.T) {
 	n := New(seedIdentity(0x02), radio)
 
 	callCount := 0
-	n.OnPacket(meshcore.PayloadTypeAdvert, func(_ *meshcore.Packet) { callCount++ })
-	n.OnPacket(meshcore.PayloadTypeAdvert, func(_ *meshcore.Packet) { callCount++ })
+	n.OnPacket(meshcore.PayloadTypeGrpTxt, func(_ *meshcore.Packet) { callCount++ })
+	n.OnPacket(meshcore.PayloadTypeGrpTxt, func(_ *meshcore.Packet) { callCount++ })
 
-	radio.inject(makeFloodPacket(meshcore.PayloadTypeAdvert, []byte{0x01}))
+	radio.inject(makeFloodPacket(meshcore.PayloadTypeGrpTxt, []byte{0x01, 0x02, 0x03, 0x04}))
 
 	if callCount != 2 {
 		t.Errorf("expected 2 handler calls, got %d", callCount)
@@ -165,10 +166,10 @@ func TestNode_StopPreventsDispatch(t *testing.T) {
 	n := New(seedIdentity(0x06), radio)
 
 	called := false
-	n.OnPacket(meshcore.PayloadTypeAdvert, func(_ *meshcore.Packet) { called = true })
+	n.OnPacket(meshcore.PayloadTypeGrpTxt, func(_ *meshcore.Packet) { called = true })
 
 	n.Stop()
-	radio.inject(makeFloodPacket(meshcore.PayloadTypeAdvert, []byte{0x01}))
+	radio.inject(makeFloodPacket(meshcore.PayloadTypeGrpTxt, []byte{0x01, 0x02, 0x03, 0x04}))
 
 	if called {
 		t.Error("handler should not fire after Stop")
@@ -217,11 +218,11 @@ func TestNode_DataCopied(t *testing.T) {
 	n := New(seedIdentity(0x09), radio)
 
 	var receivedPayload []byte
-	n.OnPacket(meshcore.PayloadTypeAdvert, func(pkt *meshcore.Packet) {
+	n.OnPacket(meshcore.PayloadTypeGrpTxt, func(pkt *meshcore.Packet) {
 		receivedPayload = append([]byte{}, pkt.Payload...)
 	})
 
-	data := makeFloodPacket(meshcore.PayloadTypeAdvert, []byte{0xAA, 0xBB})
+	data := makeFloodPacket(meshcore.PayloadTypeGrpTxt, []byte{0xAA, 0xAA, 0xAA, 0xBB})
 	radio.inject(data)
 
 	data[len(data)-1] = 0x00
@@ -239,11 +240,11 @@ func TestNode_SignalMetadataOnPacket(t *testing.T) {
 	n := New(seedIdentity(0x0B), radio)
 
 	var got *meshcore.Packet
-	n.OnPacket(meshcore.PayloadTypeAdvert, func(pkt *meshcore.Packet) {
+	n.OnPacket(meshcore.PayloadTypeGrpTxt, func(pkt *meshcore.Packet) {
 		got = pkt
 	})
 
-	radio.injectWithSignal(makeFloodPacket(meshcore.PayloadTypeAdvert, []byte{0x01, 0x02}), -7, -85)
+	radio.injectWithSignal(makeFloodPacket(meshcore.PayloadTypeGrpTxt, []byte{0x01, 0x02, 0x03, 0x04}), -7, -85)
 
 	if got == nil {
 		t.Fatal("expected packet")
@@ -257,23 +258,28 @@ func TestNode_SignalMetadataOnPacket(t *testing.T) {
 }
 
 func TestNode_AllPayloadTypes(t *testing.T) {
+	body := bytes.Repeat([]byte{0x05}, 48)
+	flood := func(typ byte) []byte { return makeFloodPacket(typ, body) }
+	// An advert shorter than MinAdvertSize is dropped unseen, so this one is real.
+	advert, _ := makeSignedAdvert(seedIdentity(0x0B), 100, "peer").ToBytes()
 	types := []struct {
 		name       string
 		payloadTyp byte
+		data       []byte
 	}{
-		{"REQ", meshcore.PayloadTypeReq},
-		{"RESPONSE", meshcore.PayloadTypeResponse},
-		{"TXT_MSG", meshcore.PayloadTypeTxtMsg},
-		{"ACK", meshcore.PayloadTypeAck},
-		{"ADVERT", meshcore.PayloadTypeAdvert},
-		{"GRP_TXT", meshcore.PayloadTypeGrpTxt},
-		{"GRP_DATA", meshcore.PayloadTypeGrpData},
-		{"ANON_REQ", meshcore.PayloadTypeAnonReq},
-		{"PATH", meshcore.PayloadTypePath},
-		{"TRACE", meshcore.PayloadTypeTrace},
-		{"MULTI_PART", meshcore.PayloadTypeMultiPart},
-		{"CONTROL", meshcore.PayloadTypeControl},
-		{"RAW_CUSTOM", meshcore.PayloadTypeRawCustom},
+		{"REQ", meshcore.PayloadTypeReq, flood(meshcore.PayloadTypeReq)},
+		{"RESPONSE", meshcore.PayloadTypeResponse, flood(meshcore.PayloadTypeResponse)},
+		{"TXT_MSG", meshcore.PayloadTypeTxtMsg, flood(meshcore.PayloadTypeTxtMsg)},
+		{"ACK", meshcore.PayloadTypeAck, flood(meshcore.PayloadTypeAck)},
+		{"ADVERT", meshcore.PayloadTypeAdvert, makeFloodPacket(meshcore.PayloadTypeAdvert, advert)},
+		{"GRP_TXT", meshcore.PayloadTypeGrpTxt, flood(meshcore.PayloadTypeGrpTxt)},
+		{"GRP_DATA", meshcore.PayloadTypeGrpData, flood(meshcore.PayloadTypeGrpData)},
+		{"ANON_REQ", meshcore.PayloadTypeAnonReq, flood(meshcore.PayloadTypeAnonReq)},
+		{"PATH", meshcore.PayloadTypePath, flood(meshcore.PayloadTypePath)},
+		{"TRACE", meshcore.PayloadTypeTrace, makeDirectPacket(meshcore.PayloadTypeTrace, nil, makeTracePayload(0x00))},
+		{"MULTI_PART", meshcore.PayloadTypeMultiPart, flood(meshcore.PayloadTypeMultiPart)},
+		{"CONTROL", meshcore.PayloadTypeControl, makeDirectPacket(meshcore.PayloadTypeControl, nil, []byte{0x80, 0x01})},
+		{"RAW_CUSTOM", meshcore.PayloadTypeRawCustom, makeDirectPacket(meshcore.PayloadTypeRawCustom, nil, body)},
 	}
 
 	for _, tc := range types {
@@ -284,7 +290,7 @@ func TestNode_AllPayloadTypes(t *testing.T) {
 			called := false
 			n.OnPacket(tc.payloadTyp, func(_ *meshcore.Packet) { called = true })
 
-			radio.inject(makeFloodPacket(tc.payloadTyp, []byte{0x01, 0x02, 0x03, 0x04}))
+			radio.inject(tc.data)
 
 			if !called {
 				t.Errorf("handler not called for payload type %s (0x%02X)", tc.name, tc.payloadTyp)
@@ -629,5 +635,174 @@ func TestNode_ExtraAckTransmitCountUnset(t *testing.T) {
 	n.router.routeDirectRecvAcks(ackRelayPacket(), 0)
 	if got := len(radio.enqueued()); got != 1 {
 		t.Fatalf("got %d enqueues, want 1", got)
+	}
+}
+
+func TestNode_SendHelpers(t *testing.T) {
+	nz := meshcore.NewRegion("nz")
+	newPkt := func(typ byte) *meshcore.Packet {
+		return &meshcore.Packet{
+			Header:         meshcore.MakeHeader(meshcore.RouteTypeTransportFlood, typ, 0),
+			TransportCode1: 0xDEAD,
+			TransportCode2: 0xBEEF,
+			PathLength:     0x01,
+			Path:           []byte{0xEE},
+			Payload:        []byte{0x01, 0x02, 0x03, 0x04, 0x05},
+		}
+	}
+	path := []byte{0xA1, 0xA2, 0xB1, 0xB2}
+	cases := []struct {
+		name      string
+		send      func(*Node, *meshcore.Packet) error
+		typ       byte
+		priority  uint8
+		route     byte
+		pathLen   uint8
+		path      []byte
+		transport bool
+	}{
+		{"flood", func(n *Node, p *meshcore.Packet) error { return n.SendFlood(p, nil, 2, 0) }, meshcore.PayloadTypeTxtMsg, 1, meshcore.RouteTypeFlood, 0x40, nil, false},
+		{"flood PATH", func(n *Node, p *meshcore.Packet) error { return n.SendFlood(p, nil, 0, 0) }, meshcore.PayloadTypePath, 2, meshcore.RouteTypeFlood, 0, nil, false},
+		{"flood ADVERT", func(n *Node, p *meshcore.Packet) error { return n.SendFlood(p, nil, 1, 0) }, meshcore.PayloadTypeAdvert, 3, meshcore.RouteTypeFlood, 0, nil, false},
+		{"scoped flood", func(n *Node, p *meshcore.Packet) error { return n.SendFlood(p, nz, 1, 0) }, meshcore.PayloadTypeGrpTxt, 1, meshcore.RouteTypeTransportFlood, 0, nil, true},
+		{"direct", func(n *Node, p *meshcore.Packet) error { return n.SendDirect(p, path, 2, 0) }, meshcore.PayloadTypeTxtMsg, 0, meshcore.RouteTypeDirect, 0x42, path, false},
+		{"direct PATH", func(n *Node, p *meshcore.Packet) error { return n.SendDirect(p, path, 1, 0) }, meshcore.PayloadTypePath, 1, meshcore.RouteTypeDirect, 0x04, path, false},
+		{"zero-hop", func(n *Node, p *meshcore.Packet) error { return n.SendZeroHop(p, nil, 0) }, meshcore.PayloadTypePath, 0, meshcore.RouteTypeDirect, 0, nil, false},
+		{"scoped zero-hop", func(n *Node, p *meshcore.Packet) error { return n.SendZeroHop(p, nz, 0) }, meshcore.PayloadTypeTxtMsg, 0, meshcore.RouteTypeTransportDirect, 0, nil, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			radio := &mockTxRadio{}
+			n := New(seedIdentity(0x01), radio)
+			defer n.Stop()
+
+			pkt := newPkt(tc.typ)
+			if err := tc.send(n, pkt); err != nil {
+				t.Fatal(err)
+			}
+			calls := radio.enqueued()
+			if len(calls) != 1 || calls[0].priority != tc.priority {
+				t.Fatalf("calls = %d, want 1 at priority %d", len(calls), tc.priority)
+			}
+			out := mustPacketFromBytes(t, calls[0].data)
+			if out.RouteType() != tc.route || out.PathLength != tc.pathLen || !bytes.Equal(out.Path, tc.path) {
+				t.Fatalf("route %d path %x/%02x, want route %d path %x/%02x", out.RouteType(), out.Path, out.PathLength, tc.route, tc.path, tc.pathLen)
+			}
+			if tc.transport && out.TransportCode1 != nz.CalcTransportCode(out) {
+				t.Fatalf("transport code = %04x, want the region's", out.TransportCode1)
+			}
+			if out.TransportCode2 != 0 || !bytes.Equal(out.Payload, newPkt(tc.typ).Payload) {
+				t.Fatalf("transport code 2 %04x payload %x, want the stale code and path dropped", out.TransportCode2, out.Payload)
+			}
+			if !n.router.dedup.Contains(out) {
+				t.Fatal("sent packet not marked seen")
+			}
+		})
+	}
+}
+
+func TestNode_SendDirectTrace(t *testing.T) {
+	radio := &mockTxRadio{}
+	n := New(seedIdentity(0x01), radio)
+	defer n.Stop()
+
+	trace := &meshcore.Packet{Header: meshcore.MakeHeader(meshcore.RouteTypeDirect, meshcore.PayloadTypeTrace, 0), Payload: makeTracePayload(0x00)}
+	if err := n.SendDirect(trace, []byte{0xA1, 0xB1}, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	calls := radio.enqueued()
+	out := mustPacketFromBytes(t, calls[0].data)
+	if calls[0].priority != TracePriority || out.PathLength != 0 || !bytes.Equal(out.Payload, makeTracePayload(0x00, 0xA1, 0xB1)) {
+		t.Fatalf("priority %d path_len %d payload %x, want path moved into the payload", calls[0].priority, out.PathLength, out.Payload)
+	}
+	if err := n.SendFlood(trace, nil, 1, 0); !errors.Is(err, ErrInvalidPacket) {
+		t.Fatalf("SendFlood(TRACE) error = %v, want ErrInvalidPacket", err)
+	}
+}
+
+func TestNode_OwnSendPriorities(t *testing.T) {
+	radio := &mockTxRadio{}
+	peer := seedIdentity(0x02)
+	n := New(seedIdentity(0x01), radio)
+	defer n.Stop()
+
+	_ = n.SendGroupText(testChannel("test"), testGroupPayload("hi"), 1, time.Minute, 0, nil)
+	_ = n.SendTextMessage(peer.Identity, []byte("hi"), 0, time.Now(), nil, 1, time.Minute, nil)
+	_ = n.SendTextMessage(peer.Identity, []byte("hi"), 0, time.Now(), []byte{0xA1}, 1, time.Minute, nil)
+	n.advertData = &meshcore.AdvertAppData{Type: "CHAT", Name: "me"}
+	n.sendAdvert()
+
+	var got []uint8
+	for _, c := range radio.enqueued() {
+		got = append(got, c.priority)
+	}
+	if want := []uint8{1, 1, 0, 3}; !bytes.Equal(got, want) {
+		t.Fatalf("priorities = %v, want %v", got, want)
+	}
+}
+
+func TestNode_RejectedSendNotMarkedSeen(t *testing.T) {
+	sends := map[string]func(*Node, *meshcore.Packet) error{
+		"SendPacket":        func(n *Node, p *meshcore.Packet) error { return n.SendPacket(p) },
+		"SendPacketDelayed": func(n *Node, p *meshcore.Packet) error { return n.SendPacketDelayed(p, PrioritySend, 0) },
+		"SendFlood":         func(n *Node, p *meshcore.Packet) error { return n.SendFlood(p, nil, 1, 0) },
+		"SendDirect":        func(n *Node, p *meshcore.Packet) error { return n.SendDirect(p, []byte{0xA1}, 1, 0) },
+		"SendZeroHop":       func(n *Node, p *meshcore.Packet) error { return n.SendZeroHop(p, nil, 0) },
+	}
+	for name, send := range sends {
+		n := New(seedIdentity(0x01), &mockTxRadio{})
+		pkt := &meshcore.Packet{Header: meshcore.MakeHeader(meshcore.RouteTypeFlood, meshcore.PayloadTypeGrpTxt, 0), Payload: make([]byte, meshcore.MaxPacketPayload+1)}
+		if err := send(n, pkt); !errors.Is(err, ErrInvalidPacket) || n.router.dedup.Contains(pkt) {
+			t.Errorf("%s: error = %v, seen = %v, want ErrInvalidPacket and unseen", name, err, n.router.dedup.Contains(pkt))
+		}
+		n.Stop()
+	}
+}
+
+func TestNode_RetryResendUsesFloodPriority(t *testing.T) {
+	radio := &mockTxRadio{}
+	n := New(seedIdentity(0x01), radio)
+	defer n.Stop()
+
+	for _, typ := range []byte{meshcore.PayloadTypeGrpTxt, meshcore.PayloadTypeAdvert} {
+		pkt := &meshcore.Packet{Header: meshcore.MakeHeader(meshcore.RouteTypeFlood, typ, 0), Payload: []byte{0x01, 0x02, 0x03, 0x04}}
+		if err := n.retries.sendFn(pkt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got []uint8
+	for _, c := range radio.enqueued() {
+		got = append(got, c.priority)
+	}
+	if want := []uint8{priorityFlood, priorityFloodAdvert}; !bytes.Equal(got, want) {
+		t.Fatalf("resend priorities = %v, want %v", got, want)
+	}
+}
+
+func TestNode_SendRejectsInvalidPackets(t *testing.T) {
+	radio := &mockTxRadio{}
+	peer := seedIdentity(0x02)
+	n := New(seedIdentity(0x01), radio)
+	defer n.Stop()
+
+	pkt := func(pathLen uint8, payload int) *meshcore.Packet {
+		return &meshcore.Packet{Header: meshcore.MakeHeader(meshcore.RouteTypeFlood, meshcore.PayloadTypeGrpTxt, 0), PathLength: pathLen, Payload: make([]byte, payload)}
+	}
+	errs := map[string]error{
+		"bad path_len":       n.SendPacket(pkt(0xC0, 10)),
+		"oversized payload":  n.SendPacketDelayed(pkt(0, meshcore.MaxPacketPayload+1), 0, 0),
+		"flood hash size 5":  n.SendFlood(pkt(0, 10), nil, 5, 0),
+		"direct hash size 4": n.SendDirect(pkt(0, 10), nil, 4, 0),
+		"ragged path":        n.SendDirect(pkt(0, 10), []byte{1, 2, 3}, 2, 0),
+		"DM hash size 5":     n.SendTextMessage(peer.Identity, []byte("hi"), 0, time.Now(), nil, 5, time.Minute, nil),
+		"group hash size 4":  n.SendGroupText(testChannel("test"), testGroupPayload("hi"), 4, time.Minute, 0, nil),
+	}
+	for name, err := range errs {
+		if !errors.Is(err, ErrInvalidPacket) {
+			t.Errorf("%s: error = %v, want ErrInvalidPacket", name, err)
+		}
+	}
+	if got := len(radio.enqueued()); got != 0 {
+		t.Fatalf("%d packets enqueued, want 0", got)
 	}
 }

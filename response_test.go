@@ -313,3 +313,20 @@ func TestResponseRoundTrip(t *testing.T) {
 		t.Errorf("Decrypt() = %q, want %q", gotTrimmed, plaintext)
 	}
 }
+
+func TestNewResponse(t *testing.T) {
+	alice, bob, shared := testPeers(t)
+	plain := []byte("tag!reply body")
+	resp, err := NewResponse(bob, alice.Identity, plain, shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, _ := resp.ToBytes()
+	back, err := ResponseFromBytes(wire)
+	if err != nil || back.Destination != alice.PublicKey()[0] || back.Source != bob.PublicKey()[0] {
+		t.Fatalf("ResponseFromBytes = %+v, err %v", back, err)
+	}
+	if got := back.Decrypt(shared); !strings.HasPrefix(string(got), string(plain)) {
+		t.Fatalf("Decrypt = %q, want prefix %q", got, plain)
+	}
+}

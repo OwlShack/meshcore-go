@@ -33,3 +33,12 @@ func (r *Request) VerifyMAC(sharedSecret []byte) bool {
 func (r *Request) Decrypt(sharedSecret []byte) []byte {
 	return macDecrypt(sharedSecret, r.MAC, r.EncryptedPayload)
 }
+
+// NewRequest encrypts plaintext into a REQ payload from self to peer.
+func NewRequest(self LocalIdentity, peer Identity, plaintext []byte, sharedSecret []byte) (*Request, error) {
+	mac, enc, err := macEncrypt(sharedSecret, plaintext)
+	if err != nil {
+		return nil, err
+	}
+	return &Request{Destination: peer.PublicKey()[0], Source: self.PublicKey()[0], MAC: mac, EncryptedPayload: enc}, nil
+}

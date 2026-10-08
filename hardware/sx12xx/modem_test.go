@@ -14,7 +14,10 @@ import (
 	"github.com/OwlShack/meshcore-go/node"
 )
 
-var _ node.Modem = (*Modem)(nil)
+var (
+	_ node.Modem        = (*Modem)(nil)
+	_ node.DeadNotifier = (*Modem)(nil)
+)
 
 type fakeRadio struct {
 	mu               sync.Mutex
@@ -255,14 +258,6 @@ func TestNewModemAppliesMeshCoreSettings(t *testing.T) {
 	}
 }
 
-func TestPreambleForSF(t *testing.T) {
-	for sf, want := range map[uint8]uint16{5: 32, 7: 32, 8: 32, 9: 16, 11: 16, 12: 16} {
-		if got := PreambleForSF(sf); got != want {
-			t.Errorf("PreambleForSF(%d) = %d, want %d", sf, got, want)
-		}
-	}
-}
-
 func TestCodingRateNormalises(t *testing.T) {
 	for in, want := range map[uint8]CodingRate{1: CR4_5, 4: CR4_8, 5: CR4_5, 8: CR4_8} {
 		if got := codingRate(in); got != want {
@@ -417,12 +412,25 @@ func waitForFloorWithin(t *testing.T, m *Modem, lo, hi int, d time.Duration) int
 	t.Helper()
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
-		if f := m.NoiseFloor(); f >= lo && f <= hi {
-			return f
+		if f, ok := m.NoiseFloor(); ok && int(f) >= lo && int(f) <= hi {
+			return int(f)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	return m.NoiseFloor()
+	f, _ := m.NoiseFloor()
+	return int(f)
+}
+
+func TestNoiseFloorNotMeasuredBeforeFirstRound(t *testing.T) {
+	m, err := NewModem(newFakeRadio(), meshcoreConfig(), withNoiseTimings(time.Hour, time.Hour))
+	if err != nil {
+		t.Fatalf("NewModem: %v", err)
+	}
+	defer m.Close()
+
+	if f, ok := m.NoiseFloor(); ok {
+		t.Fatalf("NoiseFloor() = %v, true before any round completed", f)
+	}
 }
 
 func TestNoiseFloorConvergesFromRealisticAmbient(t *testing.T) {

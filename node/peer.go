@@ -22,7 +22,7 @@ type Peer struct {
 	Feat2    uint16
 	// OutPath is the route to this peer in send order: the reverse of the path on a received advert.
 	OutPath             []byte
-	OutPathHashSize     uint8  // Bytes per hop hash (1, 2, or 4). 0 means default (1).
+	OutPathHashSize     uint8  // Bytes per hop hash (1 to 3). 0 means default (1).
 	LastAdvertTimestamp uint32 // Timestamp from the peer's clock (replay protection).
 	LastSeen            time.Time
 	SNR                 float32 // Real decibels (converted from wire quarter-dB at ingest).

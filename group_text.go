@@ -51,10 +51,7 @@ func (p *GroupTextPayload) Encrypt(channelHash byte, psk []byte) (*GroupText, er
 		return nil, err
 	}
 	buf.WriteByte(p.Flags)
-	prefix := ""
-	if p.Sender != "" {
-		prefix = p.Sender + ": "
-	}
+	prefix := p.Sender + ": "
 	buf.WriteString(prefix)
 	buf.WriteString(TruncateUTF8(p.Text, MaxTextLen-len(prefix)))
 
@@ -78,6 +75,9 @@ func (g *GroupText) DecryptStruct(channelKey []byte) (*GroupTextPayload, error) 
 	}
 	if len(plaintext) < 5 {
 		return nil, fmt.Errorf("decrypted payload too short: %d bytes", len(plaintext))
+	}
+	if plaintext[4]>>2 != TxtTypePlain {
+		return nil, fmt.Errorf("group text: unsupported text type %d", plaintext[4]>>2)
 	}
 
 	msg := string(bytes.TrimRight(plaintext[5:], "\x00"))

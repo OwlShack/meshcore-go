@@ -1,6 +1,7 @@
 package meshcore
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
 	"strings"
@@ -392,4 +393,59 @@ func FuzzParsePathPayload(f *testing.F) {
 			t.Fatalf("fields do not tile the input: %d+%d vs %d", len(p.Path), len(p.Extra), len(plain))
 		}
 	})
+}
+
+func TestPathPayloadToBytes(t *testing.T) {
+	alice, bob, shared := testPeers(t)
+	p := &PathPayload{PathLength: MakePathLen(2, 2), Path: []byte{0xA1, 0xA2, 0xB1, 0xB2}, ExtraType: PayloadTypeAck, Extra: []byte{1, 2, 3, 4}}
+	plain, err := p.ToBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []byte{0x42, 0xA1, 0xA2, 0xB1, 0xB2, PayloadTypeAck, 1, 2, 3, 4}; !bytes.Equal(plain, want) {
+		t.Fatalf("ToBytes = %x, want %x", plain, want)
+	}
+	pkt, err := NewPath(alice, bob.Identity, plain, shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, _ := pkt.ToBytes()
+	back, err := PathFromBytes(wire)
+	if err != nil || back.Destination != bob.PublicKey()[0] || back.Source != alice.PublicKey()[0] {
+		t.Fatalf("PathFromBytes = %+v, err %v", back, err)
+	}
+	got, err := back.DecryptStruct(shared)
+	if err != nil || !bytes.Equal(got.Path, p.Path) || got.ExtraType != PayloadTypeAck || !bytes.HasPrefix(got.Extra, p.Extra) {
+		t.Fatalf("DecryptStruct = %+v, err %v", got, err)
+	}
+}
+
+func TestPathPayloadToBytesFiller(t *testing.T) {
+	p := &PathPayload{PathLength: MakePathLen(1, 1), Path: []byte{0x7E}, ExtraType: PayloadTypeAck}
+	a, err := p.ToBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := p.ToBytes()
+	if len(a) != 7 || a[2] != 0xFF || bytes.Equal(a[3:], b[3:]) {
+		t.Fatalf("ToBytes = %x then %x, want 0x7E path, 0xFF, 4 fresh random bytes", a, b)
+	}
+}
+
+func TestPathPayloadToBytesLimits(t *testing.T) {
+	path := make([]byte, 64)
+	ok := &PathPayload{PathLength: MakePathLen(2, 32), Path: path, Extra: make([]byte, maxCombinedPath-64-5)}
+	if _, err := ok.ToBytes(); err != nil {
+		t.Fatalf("combined path at the limit rejected: %v", err)
+	}
+	ok.Extra = append(ok.Extra, 0)
+	if _, err := ok.ToBytes(); err == nil || !strings.HasPrefix(err.Error(), "meshcore: ") {
+		t.Fatalf("combined path over the limit err = %v", err)
+	}
+	if _, err := (&PathPayload{PathLength: MakePathLen(1, 3), Path: []byte{1, 2}}).ToBytes(); err == nil || !strings.HasPrefix(err.Error(), "meshcore: ") {
+		t.Fatalf("path shorter than path_len err = %v", err)
+	}
+	if _, err := (&PathPayload{PathLength: MakePathLen(4, 1), Path: []byte{1, 2, 3, 4}}).ToBytes(); err == nil || !strings.HasPrefix(err.Error(), "meshcore: ") {
+		t.Fatalf("reserved hash size err = %v", err)
+	}
 }

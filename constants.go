@@ -59,8 +59,70 @@ const (
 	MaxPacketPayload  = 184
 	MaxPathSize       = 64
 	MaxTransUnit      = 255
-	MaxTextLen        = 10 * 16 // 10 * CIPHER_BLOCK_SIZE = 160 bytes
+	MaxTextLen        = 10 * 16        // 10 * CIPHER_BLOCK_SIZE = 160 bytes
+	MaxRetryTextLen   = MaxTextLen - 2 // longest text a DM attempt above 3 can carry, after its 2-byte tail
 
 	// MinAdvertSize is the minimum advert payload: pubkey + timestamp + signature.
 	MinAdvertSize = PubKeySize + 4 + SignatureSize // 100 bytes
+)
+
+// Request types (firmware REQ_TYPE_*), the byte after the timestamp in a REQ.
+const (
+	ReqTypeGetStatus        byte = 0x01
+	ReqTypeKeepAlive        byte = 0x02
+	ReqTypeGetTelemetryData byte = 0x03
+	ReqTypeGetAvgMinMax     byte = 0x04
+	ReqTypeGetAccessList    byte = 0x05
+	ReqTypeGetNeighbours    byte = 0x06
+	ReqTypeGetOwnerInfo     byte = 0x07
+	ReqTypeSubscribe        byte = 0x08
+	ReqTypeUnsubscribe      byte = 0x09
+)
+
+// Anon request types (firmware ANON_REQ_TYPE_*), the byte after the timestamp in an ANON_REQ
+// that is not a login; servers only answer them when sent direct.
+const (
+	AnonReqTypeRegions byte = 0x01
+	AnonReqTypeOwner   byte = 0x02
+	AnonReqTypeBasic   byte = 0x03
+)
+
+// ACL permissions (firmware PERM_ACL_*); the role is the low two bits.
+const (
+	PermACLGuest     byte = 0
+	PermACLReadOnly  byte = 1
+	PermACLReadWrite byte = 2
+	PermACLAdmin     byte = 3
+	PermACLRoleMask  byte = 3
+)
+
+// Text message types (firmware TXT_TYPE_*), carried in the upper six bits of a TXT_MSG's flags byte.
+const (
+	TxtTypePlain       byte = 0
+	TxtTypeCLIData     byte = 1
+	TxtTypeSignedPlain byte = 2 // text preceded by a 4-byte sender pubkey prefix
+	TxtTypeCLICommand  byte = 3
+)
+
+// Telemetry permissions (firmware TELEM_PERM_*), the sensor groups a GET_TELEMETRY request asks for.
+const (
+	TelemPermBase        byte = 0x01 // battery and other base readings
+	TelemPermLocation    byte = 0x02
+	TelemPermEnvironment byte = 0x04
+)
+
+// GET_NEIGHBOURS orderings, the order_by byte of a NeighboursRequest.
+const (
+	NeighboursNewestFirst    byte = 0
+	NeighboursOldestFirst    byte = 1
+	NeighboursStrongestFirst byte = 2
+	NeighboursWeakestFirst   byte = 3
+)
+
+// Anon BASIC reply feature bits.
+const (
+	AnonFeatureBridgeMask   byte = 0x03 // zero when the server is not a bridge
+	AnonFeatureBridgeRS232  byte = 0x01
+	AnonFeatureBridgeESPNow byte = 0x03
+	AnonFeatureDisabled     byte = 0x80 // the repeater has forwarding turned off
 )

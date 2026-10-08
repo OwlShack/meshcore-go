@@ -211,11 +211,12 @@ The pin names are the board's, not the chip's: the values above are a Waveshare-
 | Type | Description |
 |------|-------------|
 | `Packet` | Header, encoded path, payload; `Clone`, `PathHashes`, `Validate` |
-| `TextMessage`, `Request`, `Response`, `Path`, `AnonReq`, `GroupText`, `GroupData` | Encrypted payloads: `FromBytes`, `ToBytes`, `VerifyMAC`, `Decrypt`; `GroupText` and `Path` add `DecryptStruct` |
+| `TextMessage`, `Request`, `Response`, `Path`, `AnonReq`, `GroupText`, `GroupData` | Encrypted payloads: `FromBytes`, `ToBytes`, `VerifyMAC`, `Decrypt`; `GroupText`, `GroupData` and `Path` add `DecryptStruct`; `NewTextMessage`, `NewRequest`, `NewResponse`, `NewAnonReq`, `NewPath` and `NewGroupData` build them |
+| Request and reply bodies | `Build*`/`Parse*` for login, status, telemetry, access lists, neighbours, owner info, sensor min/max/average, subscriptions, keep-alives, anon REGIONS/OWNER/BASIC, and decrypted text messages with their ACK hashes |
 | `Advert` / `AdvertAppData` | Signed node advertisement; names are truncated at a UTF-8 boundary to fit 32 bytes |
 | `Ack`, `Control`, `Trace`, `MultiPart`, `RawCustom` | Remaining payload types |
 | `Identity` / `LocalIdentity` | Ed25519 keys, seed and firmware expanded-key import, key exchange |
-| `ChannelEntry`, `Region` | Channel PSK/hash derivation, flood-scope transport keys |
+| `ChannelEntry`, `Region` | Channel PSK (16 or 32 bytes) and hash derivation, `PublicChannel`, flood-scope transport keys |
 | `DedupCache` | 160-entry packet-hash ring, as in the firmware |
 
 Crypto: `DeriveSharedSecret`, `EncryptThenMAC`, `MACThenDecrypt` (AES-128-ECB plus truncated HMAC-SHA256). MAC failures return `ErrBadMAC`; truncated input returns `ErrTooShort`.
@@ -232,11 +233,11 @@ SNR on the wire is quarter-dB; `SNRFromWire` and `PathSNRdB` convert to real dB.
 
 One typed method per command, all taking a `context.Context` except `Reboot` and `FactoryReset`, which get no reply. Commands are serialised internally because the firmware answers in order with no correlation id.
 
-- Device: `DeviceQuery`, `AppStart`, `SetDeviceTime`, `SyncDeviceTime`, `GetDeviceTime`, `GetBattAndStorage`, `GetStats`, `Reboot`, `FactoryReset`, `RunCLI`
+- Device: `DeviceQuery`, `AppStart`, `SetDeviceTime`, `SyncDeviceTime`, `GetDeviceTime`, `GetBattAndStorage`, `GetStats`, `GetSelfTelemetry`, `Reboot`, `FactoryReset`, `RunCLI`
 - Contacts: `GetContacts`, `GetContactsSince`, `GetContactByKey`, `AddUpdateContact`, `AddUpdateContactFull`, `RemoveContact`, `ShareContact`, `ExportContact`, `ImportContact`, `ResetPath`, `GetAdvertPath`
 - Messaging: `SendTextMessage`, `SendChannelTextMessage`, `SendChannelData`, `SendChannelDataFlood`, `GetWaitingMessages`
 - Radio and tuning: `SetRadioParams`, `SetTxPower`, `SetTuningParams`, `GetTuningParams`, `GetAllowedRepeatFreq`, `SetPathHashMode`
-- Configuration: `SetAdvertName`, `SetAdvertLatLon`, `SetChannel`, `GetChannel`, `SetAutoAddConfig`, `GetAutoAddConfig`, `SetDevicePin`, `SetOtherParams`, `GetCustomVars`, `SetCustomVar`
+- Configuration: `SetAdvertName`, `SetAdvertLatLon`, `SetChannel`, `GetChannel`, `SetAutoAddConfig`, `GetAutoAddConfig`, `SetDevicePin`, `SetOtherParams`, `SetOtherParamsFull`, `GetCustomVars`, `SetCustomVar`
 - Flood scopes: `SetFloodScope`, `SetFloodScopeUnscoped`, `SetDefaultFloodScope`, `ClearDefaultFloodScope`, `GetDefaultFloodScope`
 - Security: `ExportPrivateKey`, `ImportPrivateKey`, `SignStart`, `SignData`, `SignFinish`
 - Remote nodes: `SendLogin`, `Logout`, `HasConnection`, `SendStatusReq`, `SendTelemetryReq`, `SendBinaryReq`, `SendAnonReq`, `SendTracePath`, `SendPathDiscoveryReq`
@@ -265,7 +266,9 @@ A timeout returns `ErrTxTimeout` without cancelling the firmware transmission, a
 
 Firmware enables RX metadata by default, so `Connect` always pushes the modem's own setting (`WithSignalReport`, default off). `SetSignalReport` requests a runtime change; firmware's `0x9A` confirmation updates local metadata pairing. Disabling flushes held data without metadata. RX metadata reaches both general and hardware callbacks after internal pairing. DATA callbacks always run serially in receive order; `WithHandlerWorkers` parallelizes non-DATA callbacks only. Slow DATA callbacks can still cause inbound drops, but cannot block internal TX completion. `Close` is terminal for a modem instance; reconnect the transport using a live modem or create a new instance after closing it.
 
-`SendKissCommand` sends the standard KISS parameters (TXDELAY, PERSISTENCE, SLOTTIME, TXTAIL, FULLDUPLEX). The firmware defaults to a 500 ms TXDELAY and p-persistent CSMA with P=63 and 100 ms slots underneath the node's own scheduling. Commands longer than the firmware's 512-byte receive buffer return `ErrFrameTooLarge` instead of being silently dropped. `SetRadio`, `SetTxPower` and `Reboot` are answered with `HW_RESP_OK`, not the `cmd|0x80` code, and `GetRadio`/`GetTxPower` return the firmware's cached values, which are zero until the host sets them.
+`SendKissCommand` sends the standard KISS parameters (TXDELAY, PERSISTENCE, SLOTTIME, TXTAIL, FULLDUPLEX). The firmware defaults to a 500 ms TXDELAY and p-persistent CSMA with P=63 and 100 ms slots underneath the node's own scheduling. Commands longer than the firmware's 512-byte receive buffer return `ErrFrameTooLarge` instead of being silently dropped. `SetTxDelay`, `SetSlotTime`, `SetPersistence` and `SetFullDuplex` set them in real units, and with `WithTxAirtimeEstimator` the TX_DONE wait follows the TXDELAY, slot time, persistence and full duplex set. `SetRadio`, `SetTxPower` and `Reboot` are answered with `HW_RESP_OK`, not the `cmd|0x80` code; `SetRadioWait`, `SetTxPowerWait`, `RebootWait` and `SetSignalReportWait` wait for that answer. `RadioConfiguration` and `TxPowerLevel` return the firmware's cached values, which are zero until the host sets them.
+
+Every hardware query has a typed method that takes a context and waits for the reply, including the modem's own identity and crypto (`PublicKey`, `Sign`, `Verify`, `Encrypt`, `Decrypt`, `SharedSecret`, `Hash`, `Random`) and `Airtime` and `Sensors`. A hardware error is attributed only to the command that caused it, so a failed setting never fails another request. Answers are matched on the read goroutine, so `Request` may be called from a frame or data handler.
 
 The codec escapes type bytes as well as payload. Transport buffering allows up to 1,030 encoded bytes, separately from decoded frame bounds, so large escaped hardware responses survive fragmented reads. `LoRaAirtimeEstimator` uses the firmware preamble: 32 symbols at SF5–8 and 16 at higher spreading factors.
 
@@ -346,7 +349,9 @@ It follows `firmware/include/protocol.h`, `src/main.cpp` and `src/tcp_server.cpp
 | `Peer` / `PeerTable` | LRU peer table; out-paths learned from adverts are stored in send order |
 | `RegionMap` | Flood scopes: transport-code matching, the default scope for the node's own floods, and `ReplyScope` for flooded replies |
 
-Routing follows the firmware: only ACK, PATH, REQ, RESPONSE, TXT_MSG, ANON_REQ, GRP_TXT, GRP_DATA and verified ADVERT packets are re-flooded, and a direct packet with hops remaining is relayed but not delivered locally. Forwarding is opt-in through `WithAllowForwardHandler`.
+Routing follows the firmware: only ACK, PATH, REQ, RESPONSE, TXT_MSG, ANON_REQ, GRP_TXT, GRP_DATA and verified ADVERT packets are re-flooded, and a direct packet with hops remaining is relayed but not delivered locally. Forwarding is opt-in through `WithAllowForwardHandler`, and `WithFloodFilterHandler` can drop floods before any handling. Truncated packets, unknown payload types, and flood TRACE, CONTROL and RAW_CUSTOM are dropped.
+
+A DM, request, response, returned path or anonymous request addressed to this node is decrypted with the matching peer's key and never re-flooded. A returned path updates the peer's out-path and confirms the DM whose ACK it carries; one that arrived by flood is answered with the node's own path, which `WithoutReciprocalPath` turns off for server roles. `SendFlood`, `SendDirect` and `SendZeroHop` send a packet you build with the firmware's routing and transmit priorities, and every send is checked first (`ErrInvalidPacket`).
 
 Regions also follow the firmware. A transport flood is relayed only when its code matches a region that allows flooding, and an unscoped flood only while the wildcard allows it, which it does by default. `WithDefaultRegion` scopes the node's own adverts, channel messages and flooded DMs. `SendGroupTextScoped` and `SendTextMessageScoped` take the scope for one send instead, where nil means unscoped. `Packet.SetScope` scopes a packet you build yourself, and `RegionMap.ReplyScope` picks the scope for a flooded reply. `meshcore.NewRegion` derives keys as the firmware does: a bare name hashes as `#name`, and a `$` private name has no key.
 

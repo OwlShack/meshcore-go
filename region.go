@@ -25,6 +25,9 @@ type Region struct {
 	Key    RegionKey
 }
 
+// NewRegionFromHashtag builds a region named "#name".
+//
+// Deprecated: use NewRegion, which keeps the name as given and gives a "$" private name no key, as firmware does.
 func NewRegionFromHashtag(name string) *Region {
 	name = normalizeRegionName(name)
 	key := DeriveRegionKey(name)

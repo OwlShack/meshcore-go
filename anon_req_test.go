@@ -1,6 +1,7 @@
 package meshcore
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
 	"strings"
@@ -328,5 +329,74 @@ func TestAnonReqRoundTrip(t *testing.T) {
 func TestAnonReqFromBytes_ShortIsErrTooShort(t *testing.T) {
 	if _, err := AnonReqFromBytes(make([]byte, 34)); !errors.Is(err, ErrTooShort) {
 		t.Fatalf("error = %v, want ErrTooShort", err)
+	}
+}
+
+func TestBuildAnonRegionsRequest(t *testing.T) {
+	got, err := BuildAnonRegionsRequest([]byte{0xA1, 0xA2, 0xB1, 0xB2}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []byte{AnonReqTypeRegions, 0x42, 0xA1, 0xA2, 0xB1, 0xB2}; !bytes.Equal(got, want) {
+		t.Fatalf("request = %x, want %x", got, want)
+	}
+
+	if got, err := BuildAnonRegionsRequest(nil, 1); err != nil || !bytes.Equal(got, []byte{AnonReqTypeRegions, 0x00}) {
+		t.Fatalf("zero-hop request = %x, %v", got, err)
+	}
+
+	for name, c := range map[string]struct {
+		path []byte
+		size uint8
+	}{
+		"partial hop":    {[]byte{1, 2, 3}, 2},
+		"hash size 0":    {nil, 0},
+		"hash size 4":    {make([]byte, 4), 4},
+		"too many bytes": {make([]byte, 66), 3},
+		"too many hops":  {make([]byte, 64+1), 1},
+	} {
+		if _, err := BuildAnonRegionsRequest(c.path, c.size); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+}
+
+func TestParseAnonRegionsReply(t *testing.T) {
+	data := append([]byte{0x10, 0x20, 0x30, 0x40}, "*,nz,au"...)
+	data = append(data, 0, 0, 0)
+	got, err := ParseAnonRegionsReply(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Clock != 0x40302010 || strings.Join(got.Regions, "|") != "*|nz|au" {
+		t.Fatalf("reply = %+v", got)
+	}
+
+	if got, err := ParseAnonRegionsReply([]byte{1, 0, 0, 0, 0, 0}); err != nil || got.Regions != nil {
+		t.Fatalf("empty list = %+v, %v; want no regions", got, err)
+	}
+	if _, err := ParseAnonRegionsReply([]byte{1, 2, 3}); !errors.Is(err, ErrTooShort) {
+		t.Fatalf("short reply err = %v, want ErrTooShort", err)
+	}
+}
+
+func TestNewAnonReq(t *testing.T) {
+	sender, server, shared := testPeers(t)
+	plain := []byte("\x01\x02\x03\x04password")
+	a, err := NewAnonReq(sender, server.Identity, plain, shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, _ := a.ToBytes()
+	if wire[0] != server.PublicKey()[0] || !bytes.Equal(wire[1:33], sender.PublicKeyBytes()) {
+		t.Fatalf("header = %x, want dest hash then sender pubkey", wire[:33])
+	}
+	back, err := AnonReqFromBytes(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverShared, _ := server.SharedSecret(NewIdentity(back.EphemeralPubKey))
+	if got := back.Decrypt(serverShared); !bytes.HasPrefix(got, plain) {
+		t.Fatalf("Decrypt = %x, want prefix %x", got, plain)
 	}
 }

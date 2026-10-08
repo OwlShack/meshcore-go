@@ -1,6 +1,8 @@
 package node
 
 import (
+	"bytes"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -465,5 +467,61 @@ func TestNode_SendTextMessage_RetriesAreUnique(t *testing.T) {
 			t.Errorf("send %d has the same packet hash as send %d (retries not unique)", i, prev)
 		}
 		hashes[h] = i
+	}
+}
+
+func TestNode_SendTextMessage_LengthLimits(t *testing.T) {
+	peer := seedIdentity(0xF3).Identity
+
+	t.Run("over MaxTextLen is refused", func(t *testing.T) {
+		radio := &mockRadio{}
+		n := New(seedIdentity(0xF2), radio)
+		defer n.Stop()
+		err := n.SendTextMessage(peer, bytes.Repeat([]byte("x"), meshcore.MaxTextLen+1), 0, time.Now(), nil, 1, time.Second, nil)
+		if !errors.Is(err, ErrTextTooLong) {
+			t.Fatalf("err = %v, want ErrTextTooLong", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+		if len(radio.sentData()) != 0 {
+			t.Fatal("an over-long DM was transmitted")
+		}
+	})
+
+	cases := []struct {
+		name    string
+		textLen int
+		sends   int
+	}{
+		{"MaxTextLen stops before the attempts that need a tail", meshcore.MaxTextLen, 3},
+		{"MaxRetryTextLen uses every attempt", meshcore.MaxRetryTextLen, 5},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			radio := &mockRadio{}
+			n := New(seedIdentity(0xF2), radio)
+			defer n.Stop()
+
+			done := make(chan DMSendResult, 1)
+			err := n.SendTextMessage(peer, bytes.Repeat([]byte("x"), c.textLen), 0, time.Now(), []byte{0x01}, 1, 30*time.Millisecond, func(r DMSendResult) { done <- r })
+			if err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case r := <-done:
+				if r.Confirmed {
+					t.Fatal("unacknowledged DM reported confirmed")
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("no result")
+			}
+			deadline := time.Now().Add(time.Second)
+			for len(radio.sentData()) < c.sends && time.Now().Before(deadline) {
+				time.Sleep(10 * time.Millisecond)
+			}
+			time.Sleep(50 * time.Millisecond)
+			if got := len(radio.sentData()); got != c.sends {
+				t.Fatalf("sent %d attempts, want %d", got, c.sends)
+			}
+		})
 	}
 }

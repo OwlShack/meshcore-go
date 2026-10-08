@@ -1,5 +1,7 @@
 package companion
 
+import meshcore "github.com/OwlShack/meshcore-go"
+
 // SupportedProtocolVersion is the app_target_ver this library advertises in CMD_DEVICE_QUERY.
 const SupportedProtocolVersion = 3
 
@@ -171,12 +173,12 @@ const (
 // OutPathUnknown is the firmware's OUT_PATH_UNKNOWN path_len.
 const OutPathUnknown byte = 0xFF
 
-// Text message types (firmware TXT_TYPE_*).
+// Text message types, the same as the meshcore TxtType constants.
 const (
-	TxtTypePlain       byte = 0
-	TxtTypeCLIData     byte = 1
-	TxtTypeSignedPlain byte = 2 // text preceded by a 4-byte sender pubkey prefix
-	TxtTypeCLICommand  byte = 3
+	TxtTypePlain       = meshcore.TxtTypePlain
+	TxtTypeCLIData     = meshcore.TxtTypeCLIData
+	TxtTypeSignedPlain = meshcore.TxtTypeSignedPlain
+	TxtTypeCLICommand  = meshcore.TxtTypeCLICommand
 )
 
 // Contact flags.
