@@ -12,7 +12,13 @@ tests, CI and tooling get no entry, however big the PR, and nothing lists what i
 `### Added`, `### Changed` and `### Fixed`, plus `### Upgrading` when users must change their
 code. `scripts/prepare-release.sh` renames the section for the release.
 
-## Unreleased
+## v1.7.0 - 2026-10-08
+
+Baseline `v1.6.0`.
+
+Catches up with MeshCore firmware: every payload can be built and parsed, regions and the
+companion CLI are supported, KISS modem commands are typed, and nodes confirm flooded DMs and send
+with firmware priorities. The module is now `github.com/OwlShack/meshcore-go`; see Upgrading.
 
 ### Added
 
