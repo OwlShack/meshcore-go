@@ -12,20 +12,21 @@ jobs:
   release:
     name: Create Release
     runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Extract version from tag
-        id: version
+      # A tag with no CHANGELOG.md section gets only the generated notes.
+      - name: Extract release notes
         run: |
-          VERSION="${GITHUB_REF#refs/tags/}"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          scripts/release-notes.sh "${VERSION}" > RELEASE_NOTES.md
+          echo "::notice::release body is $(wc -l < RELEASE_NOTES.md) lines from CHANGELOG.md"
 
       - name: Create submodule tags
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
           git tag "companion/transport/${VERSION}"
           git tag "hardware/transport/${VERSION}"
           git tag "hardware/sx12xx/${VERSION}"
@@ -33,7 +34,6 @@ jobs:
 
       - name: Push submodule tags
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
           git push origin "companion/transport/${VERSION}"
           git push origin "hardware/transport/${VERSION}"
           git push origin "hardware/sx12xx/${VERSION}"
@@ -41,6 +41,6 @@ jobs:
 
       - name: Create GitHub Release
         run: |
-          gh release create "${{ steps.version.outputs.version }}" --generate-notes
+          gh release create "${VERSION}" --notes-file RELEASE_NOTES.md --generate-notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
