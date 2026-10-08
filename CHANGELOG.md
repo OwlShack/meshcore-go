@@ -12,7 +12,13 @@ tests, CI and tooling get no entry, however big the PR, and nothing lists what i
 `### Added`, `### Changed` and `### Fixed`, plus `### Upgrading` when users must change their
 code. `scripts/prepare-release.sh` renames the section for the release.
 
-## Unreleased
+## v1.7.0 - 2026-10-08
+
+Baseline `v1.6.0`.
+
+Catches up with MeshCore firmware: every payload can be built and parsed, regions and the
+companion CLI are supported, KISS modem commands are typed, and nodes confirm flooded DMs and send
+with firmware priorities. The module is now `github.com/OwlShack/meshcore-go`; see Upgrading.
 
 ### Added
 
@@ -30,9 +36,10 @@ code. `scripts/prepare-release.sh` renames the section for the release.
   `ErrCodeUnsupportedCmd`. To run a command on another companion over the mesh, send a text
   message with `TxtTypeCLICommand`; it only runs if that companion's contact for you has
   `ContactFlagRemoteCLI` set.
-- **Protocol constants in the `meshcore` package.** `ReqType*` for requests, `AnonReqType*` for
-  anon requests, `PermACL*` for ACL permissions and `TxtType*` for text message types, with the
-  firmware's values. `companion.TxtType*` are now the same constants.
+- **Protocol constants in the `meshcore` package.** `ReqType*` for requests, `AnonReqType*` for anon
+  requests, `PermACL*` for ACL permissions, `TelemPerm*` for telemetry sensor groups and `TxtType*`
+  for text message types, with the firmware's values. `companion.TxtType*` are now the same
+  constants.
 - **`MakePathLen` and `PathLenFields` encode and decode a `path_len` byte** from bytes per hop
   (1 to 3) and hop count.
 - **Ask a repeater which regions it floods.** `BuildAnonRegionsRequest(replyPath, hashSize)` builds
@@ -64,9 +71,10 @@ code. `scripts/prepare-release.sh` renames the section for the release.
   OWNER and BASIC requests (`BuildAnonRequest`). Each has a `Build*` and a `Parse*` working on the
   bytes after the 4-byte tag; `BuildTaggedPlaintext` and `ParseTaggedPlaintext` add or split it.
 - **Read and acknowledge any decrypted text message.** `ParseTextPlaintext` decodes plain, CLI and
-  signed messages. `TextAckHash` and `SignedTextAckHash` give the ACK each kind expects, and
-  `BuildSignedTextPlaintext` builds a signed room post. `TextFlags(TxtTypeCLIData)` gives the
-  flags byte the text builders take, so the type no longer needs shifting by hand.
+  signed messages. `TextAckHash` and `SignedTextAckHash` give the ACK each kind expects,
+  `BuildTextAck` builds it, and `BuildSignedTextPlaintext` builds a signed room post.
+  `TextFlags(TxtTypeCLIData)` gives the flags byte the text builders take, so the type no longer
+  needs shifting by hand.
 - **`meshcore.IsValidAdvertName` checks a node name** against the characters firmware refuses.
 - **Companion client additions.** `GetSelfTelemetry` reads the companion's own sensors; call
   `AppStart` first, so it can tell its own telemetry from a remote node's.
@@ -76,8 +84,8 @@ code. `scripts/prepare-release.sh` renames the section for the release.
 - **The KISS modem's own commands have typed methods.** `PublicKey`, `Sign`, `Verify`, `Encrypt`,
   `Decrypt`, `SharedSecret`, `Hash`, `Random`, `Airtime`, `Sensors` and `SignalReport` return typed
   results. `SetRadioWait`, `SetTxPowerWait`, `SetSignalReportWait` and `RebootWait` return once the
-  modem acknowledges, and `SetTxDelay`, `SetSlotTime`, `SetPersistence` and `SetFullDuplex` tune its
-  CSMA timing in real units.
+  modem acknowledges. `SetTxDelay` and `SetSlotTime` take durations, `SetPersistence` sets how
+  often a clear channel is taken, and `SetFullDuplex` skips carrier sense.
 - **Send packets you build with firmware routing and priorities.** `Node.SendFlood`, `SendDirect`
   and `SendZeroHop` set the route and path and queue at the firmware's transmit priority.
   `WithFloodFilterHandler` drops floods before any handling, and `DedupCache.Clear` forgets a
@@ -124,9 +132,10 @@ code. `scripts/prepare-release.sh` renames the section for the release.
   are heard.
 - **Adverts with no name no longer add a peer.** Handlers and relaying still see them.
 - **The transmit budget matches firmware.** A node waits until half a full frame's airtime is
-  available before sending, and each send is charged its estimated airtime, which `TxStats.AirtimeMs`
-  reports. Before, it was charged the time `SendData` took, which on KISS includes TXDELAY, CSMA and
-  the serial round trip, so KISS nodes were throttled several times sooner than firmware.
+  available before sending, and each send is charged its estimated airtime, which
+  `TxStats.AirtimeMs` reports. Before, it was charged the time `SendData` took, which on KISS
+  includes TXDELAY, CSMA and the serial round trip, so KISS nodes were throttled several times
+  sooner than firmware.
 
 ### Fixed
 
