@@ -2,6 +2,7 @@ package node
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"sync"
@@ -13,6 +14,12 @@ import (
 const DefaultAdvertInterval = 60 * time.Minute
 
 var ErrTxQueueFull = errors.New("transmit queue full")
+
+// ErrInvalidPacket is returned for a packet that cannot be sent as given.
+var ErrInvalidPacket = errors.New("invalid packet")
+
+// ErrTextTooLong is returned for DM text over meshcore.MaxTextLen, or over meshcore.MaxRetryTextLen on an attempt above 3.
+var ErrTextTooLong = errors.New("text too long")
 
 type PacketHandler func(pkt *meshcore.Packet)
 
@@ -33,6 +40,15 @@ const (
 	PriorityDirectRelay uint8 = 0
 	PriorityFloodRelay  uint8 = 1
 	PrioritySend        uint8 = 4
+)
+
+// Transmit priorities of the node's own direct and flood sends.
+const (
+	priorityDirect      uint8 = 0
+	priorityDirectPath  uint8 = 1
+	priorityFlood       uint8 = 1
+	priorityFloodPath   uint8 = 2
+	priorityFloodAdvert uint8 = 3
 )
 
 type Node struct {
@@ -59,10 +75,13 @@ type Node struct {
 	advertData     *meshcore.AdvertAppData
 	advertInterval time.Duration
 
+	noReciprocalPath bool
+
 	cbMu         sync.RWMutex
 	errH         func(error)
 	allowForward func(*meshcore.Packet) bool
 	allowPacket  func(*meshcore.Packet) bool
+	floodFilter  func(*meshcore.Packet) bool
 
 	handlerMu sync.RWMutex
 	handlers  map[byte][]PacketHandler
@@ -76,6 +95,8 @@ type nodeConfig struct {
 	log              *slog.Logger
 	allowForward     func(*meshcore.Packet) bool
 	allowPacket      func(*meshcore.Packet) bool
+	floodFilter      func(*meshcore.Packet) bool
+	noReciprocalPath bool
 	maxPeers         int
 	learnedPathsOnly bool
 	advertData       *meshcore.AdvertAppData
@@ -122,6 +143,20 @@ func WithAllowForwardHandler(f func(*meshcore.Packet) bool) Option {
 func WithAllowPacketHandler(f func(*meshcore.Packet) bool) Option {
 	return func(c *nodeConfig) {
 		c.allowPacket = f
+	}
+}
+
+// WithFloodFilterHandler sets a filter that drops a received flood packet before any handling when it returns true.
+func WithFloodFilterHandler(f func(*meshcore.Packet) bool) Option {
+	return func(c *nodeConfig) {
+		c.floodFilter = f
+	}
+}
+
+// WithoutReciprocalPath stops the node answering a flood PATH from a known peer with its own path return.
+func WithoutReciprocalPath() Option {
+	return func(c *nodeConfig) {
+		c.noReciprocalPath = true
 	}
 }
 
@@ -258,25 +293,27 @@ func New(identity meshcore.LocalIdentity, radio Radio, opts ...Option) *Node {
 	}
 
 	n := &Node{
-		identity:       identity,
-		radio:          radio,
-		peers:          NewPeerTable(cfg.maxPeers),
-		secrets:        newSecretCache(identity),
-		channels:       newChannelTable(cfg.maxChannels),
-		regions:        NewRegionMap(),
-		log:            cfg.log,
-		txCfg:          cfg.tx,
-		advertData:     cfg.advertData,
-		advertInterval: cfg.advertInterval,
-		errH:           cfg.errH,
-		floodDelay:     cfg.floodDelay,
-		directDelay:    cfg.directDelay,
-		rxDelay:        cfg.rxDelay,
-		extraAcks:      cfg.extraAcks,
-		allowForward:   cfg.allowForward,
-		allowPacket:    cfg.allowPacket,
-		handlers:       make(map[byte][]PacketHandler),
-		done:           make(chan struct{}),
+		identity:         identity,
+		radio:            radio,
+		peers:            NewPeerTable(cfg.maxPeers),
+		secrets:          newSecretCache(identity),
+		channels:         newChannelTable(cfg.maxChannels),
+		regions:          NewRegionMap(),
+		log:              cfg.log,
+		txCfg:            cfg.tx,
+		advertData:       cfg.advertData,
+		advertInterval:   cfg.advertInterval,
+		errH:             cfg.errH,
+		floodDelay:       cfg.floodDelay,
+		directDelay:      cfg.directDelay,
+		rxDelay:          cfg.rxDelay,
+		extraAcks:        cfg.extraAcks,
+		allowForward:     cfg.allowForward,
+		allowPacket:      cfg.allowPacket,
+		floodFilter:      cfg.floodFilter,
+		noReciprocalPath: cfg.noReciprocalPath,
+		handlers:         make(map[byte][]PacketHandler),
+		done:             make(chan struct{}),
 	}
 	n.peers.learnedPathsOnly = cfg.learnedPathsOnly
 	for i, ch := range cfg.channels {
@@ -320,7 +357,9 @@ func New(identity meshcore.LocalIdentity, radio Radio, opts ...Option) *Node {
 	}
 
 	n.acks = newACKTracker(n.done)
-	n.retries = newRetryTracker(n.sendPacketRaw, n.done)
+	n.retries = newRetryTracker(func(pkt *meshcore.Packet) error {
+		return n.enqueue(pkt, floodPriority(pkt.PayloadType()), 0, false)
+	}, n.done)
 	n.radio.SetDataHandler(n.onData)
 
 	if n.advertData != nil {
@@ -438,6 +477,19 @@ func (n *Node) SetAllowPacketHandler(f func(*meshcore.Packet) bool) {
 	n.cbMu.Unlock()
 }
 
+func (n *Node) SetFloodFilterHandler(f func(*meshcore.Packet) bool) {
+	n.cbMu.Lock()
+	n.floodFilter = f
+	n.cbMu.Unlock()
+}
+
+func (n *Node) filterFlood(pkt *meshcore.Packet) bool {
+	n.cbMu.RLock()
+	f := n.floodFilter
+	n.cbMu.RUnlock()
+	return f != nil && f(pkt)
+}
+
 func (n *Node) canAcceptPacket(pkt *meshcore.Packet) bool {
 	n.cbMu.RLock()
 	f := n.allowPacket
@@ -454,29 +506,102 @@ func (n *Node) OnPacket(payloadType byte, h PacketHandler) {
 }
 
 func (n *Node) SendPacket(pkt *meshcore.Packet) error {
-	n.router.dedup.MarkSeen(pkt)
-	return n.sendPacketRaw(pkt)
+	return n.SendPacketDelayed(pkt, PrioritySend, 0)
 }
 
 // SendPacketDelayed enqueues a packet with explicit priority and delay.
 func (n *Node) SendPacketDelayed(pkt *meshcore.Packet, priority uint8, delay time.Duration) error {
-	n.router.dedup.MarkSeen(pkt)
-	data, err := pkt.ToBytes()
-	if err != nil {
-		return err
-	}
-	if !n.txRadio.Enqueue(data, priority, delay) {
-		return ErrTxQueueFull
-	}
-	return nil
+	return n.enqueue(pkt, priority, delay, true)
 }
 
-func (n *Node) sendPacketRaw(pkt *meshcore.Packet) error {
+// SendFlood floods pkt with pathHashSize-byte hops (0 means 1), scoped to scope or unscoped when nil.
+func (n *Node) SendFlood(pkt *meshcore.Packet, scope *meshcore.Region, pathHashSize uint8, delay time.Duration) error {
+	if pkt.PayloadType() == meshcore.PayloadTypeTrace {
+		return fmt.Errorf("%w: TRACE cannot be flooded", ErrInvalidPacket)
+	}
+	pathHashSize, err := checkPathHashSize(pathHashSize)
+	if err != nil {
+		return err
+	}
+	pkt.Header = meshcore.MakeHeader(meshcore.RouteTypeFlood, pkt.PayloadType(), pkt.PayloadVer())
+	pkt.PathLength = meshcore.MakePathLen(pathHashSize, 0)
+	pkt.Path = []byte{}
+	pkt.SetScope(scope)
+	return n.SendPacketDelayed(pkt, floodPriority(pkt.PayloadType()), delay)
+}
+
+// SendDirect sends pkt along path of pathHashSize-byte hops (0 means 1); a TRACE carries the path in its payload.
+func (n *Node) SendDirect(pkt *meshcore.Packet, path []byte, pathHashSize uint8, delay time.Duration) error {
+	pathHashSize, err := checkPathHashSize(pathHashSize)
+	if err != nil {
+		return err
+	}
+	pkt.Header = meshcore.MakeHeader(meshcore.RouteTypeDirect, pkt.PayloadType(), pkt.PayloadVer())
+	priority := priorityDirect
+	switch pkt.PayloadType() {
+	case meshcore.PayloadTypeTrace:
+		pkt.Payload = append(pkt.Payload[:len(pkt.Payload):len(pkt.Payload)], path...)
+		pkt.PathLength, pkt.Path = 0, []byte{}
+		priority = TracePriority
+	default:
+		pkt.PathLength = meshcore.MakePathLen(pathHashSize, uint8(len(path)/int(pathHashSize)))
+		if _, count := meshcore.PathLenFields(pkt.PathLength); int(count)*int(pathHashSize) != len(path) {
+			return fmt.Errorf("%w: %d path bytes do not fit %d-byte hops", ErrInvalidPacket, len(path), pathHashSize)
+		}
+		pkt.Path = path
+		if pkt.PayloadType() == meshcore.PayloadTypePath {
+			priority = priorityDirectPath
+		}
+	}
+	return n.SendPacketDelayed(pkt, priority, delay)
+}
+
+// SendZeroHop sends pkt to immediate neighbours only, scoped to scope or unscoped when nil.
+func (n *Node) SendZeroHop(pkt *meshcore.Packet, scope *meshcore.Region, delay time.Duration) error {
+	pkt.Header = meshcore.MakeHeader(meshcore.RouteTypeDirect, pkt.PayloadType(), pkt.PayloadVer())
+	pkt.PathLength, pkt.Path = 0, []byte{}
+	pkt.TransportCode1, pkt.TransportCode2 = 0, 0
+	if scope != nil && !scope.Key.IsZero() {
+		pkt.Header = meshcore.MakeHeader(meshcore.RouteTypeTransportDirect, pkt.PayloadType(), pkt.PayloadVer())
+		pkt.TransportCode1 = scope.CalcTransportCode(pkt)
+	}
+	return n.SendPacketDelayed(pkt, priorityDirect, delay)
+}
+
+func checkPathHashSize(size uint8) (uint8, error) {
+	if size == 0 {
+		return 1, nil
+	}
+	if size > 3 {
+		return 0, fmt.Errorf("%w: path hash size %d", ErrInvalidPacket, size)
+	}
+	return size, nil
+}
+
+// floodPriority is the transmit priority of the node's own flood of payloadType.
+func floodPriority(payloadType byte) uint8 {
+	switch payloadType {
+	case meshcore.PayloadTypePath:
+		return priorityFloodPath
+	case meshcore.PayloadTypeAdvert:
+		return priorityFloodAdvert
+	}
+	return priorityFlood
+}
+
+// enqueue queues a valid pkt for transmit, first recording it as seen when markSeen is set.
+func (n *Node) enqueue(pkt *meshcore.Packet, priority uint8, delay time.Duration, markSeen bool) error {
+	if err := pkt.Validate(); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidPacket, err)
+	}
 	data, err := pkt.ToBytes()
 	if err != nil {
 		return err
 	}
-	if !n.txRadio.Enqueue(data, PrioritySend, 0) {
+	if markSeen {
+		n.router.dedup.MarkSeen(pkt)
+	}
+	if !n.txRadio.Enqueue(data, priority, delay) {
 		return ErrTxQueueFull
 	}
 	return nil
@@ -513,10 +638,6 @@ func (n *Node) SendGroupTextScoped(
 	maxRetries int,
 	onResult func(GroupSendResult),
 ) error {
-	if pathHashSize == 0 {
-		pathHashSize = 1
-	}
-
 	grp, err := payload.Encrypt(ch.Hash, ch.PSK[:])
 	if err != nil {
 		return err
@@ -527,14 +648,10 @@ func (n *Node) SendGroupTextScoped(
 	}
 
 	pkt := &meshcore.Packet{
-		Header:     meshcore.MakeHeader(meshcore.RouteTypeFlood, meshcore.PayloadTypeGrpTxt, 0),
-		PathLength: (pathHashSize - 1) << 6,
-		Path:       []byte{},
-		Payload:    grpBytes,
+		Header:  meshcore.MakeHeader(meshcore.RouteTypeFlood, meshcore.PayloadTypeGrpTxt, 0),
+		Payload: grpBytes,
 	}
-	pkt.SetScope(scope)
-
-	if err := n.SendPacket(pkt); err != nil {
+	if err := n.SendFlood(pkt, scope, pathHashSize, 0); err != nil {
 		return err
 	}
 
@@ -580,8 +697,8 @@ func (n *Node) SendTextMessageScoped(
 	timeout time.Duration,
 	onResult func(DMSendResult),
 ) error {
-	if pathHashSize == 0 {
-		pathHashSize = 1 // 0 is invalid: it would divide-by-zero below and corrupt PathLength
+	if len(text) > meshcore.MaxTextLen {
+		return ErrTextTooLong
 	}
 
 	self := n.Identity()
@@ -594,43 +711,36 @@ func (n *Node) SendTextMessageScoped(
 	isDirect := path != nil
 
 	// The attempt goes in the flags byte, giving each retransmission a distinct packet hash and ACK CRC.
-	compose := func(attempt int, useDirect bool) (*meshcore.Packet, uint32, error) {
+	send := func(attempt int, useDirect bool) (uint32, error) {
+		if attempt > 3 && len(text) > meshcore.MaxRetryTextLen {
+			return 0, ErrTextTooLong
+		}
 		plaintext := meshcore.BuildTextPlaintextWithAttempt(timestamp, flags, text, attempt)
 		ackCRC := meshcore.CalcAckHash(textAckHashInput(plaintext, len(text)), self.PublicKeyBytes())
 
 		msg, err := meshcore.NewTextMessage(self, peer, plaintext, secret)
 		if err != nil {
-			return nil, 0, err
+			return 0, err
 		}
 		msgBytes, err := msg.ToBytes()
 		if err != nil {
-			return nil, 0, err
+			return 0, err
 		}
 
 		pkt := &meshcore.Packet{
-			PathLength: (pathHashSize - 1) << 6,
-			Payload:    msgBytes,
+			Header:  meshcore.MakeHeader(meshcore.RouteTypeFlood, meshcore.PayloadTypeTxtMsg, 0),
+			Payload: msgBytes,
 		}
 		if useDirect {
-			pkt.Header = meshcore.MakeHeader(meshcore.RouteTypeDirect, meshcore.PayloadTypeTxtMsg, 0)
-			pkt.Path = path
-			pkt.PathLength |= uint8(len(path) / int(pathHashSize))
-		} else {
-			pkt.Header = meshcore.MakeHeader(meshcore.RouteTypeFlood, meshcore.PayloadTypeTxtMsg, 0)
-			pkt.Path = []byte{}
-			pkt.SetScope(scope)
+			return ackCRC, n.SendDirect(pkt, path, pathHashSize, 0)
 		}
-		return pkt, ackCRC, nil
+		return ackCRC, n.SendFlood(pkt, scope, pathHashSize, 0)
 	}
 
-	pkt, ackCRC, err := compose(0, isDirect)
+	ackCRC, err := send(0, isDirect)
 	if err != nil {
 		return err
 	}
-	if err := n.sendPacketRaw(pkt); err != nil {
-		return err
-	}
-	n.router.dedup.MarkSeen(pkt)
 
 	var maxRetries, directRetries int
 	if isDirect {
@@ -659,10 +769,7 @@ func (n *Node) SendTextMessageScoped(
 					return
 				}
 
-				retryPkt, retryCRC, err := compose(attempt, attempt <= directRetries)
-				if err == nil {
-					err = n.sendPacketRaw(retryPkt)
-				}
+				retryCRC, err := send(attempt, attempt <= directRetries)
 				if err != nil {
 					n.log.Warn("text message retry failed", "attempt", attempt, "error", err)
 					if onResult != nil {
@@ -670,7 +777,6 @@ func (n *Node) SendTextMessageScoped(
 					}
 					return
 				}
-				n.router.dedup.MarkSeen(retryPkt)
 				registerACK(retryCRC)
 			},
 		)

@@ -15,6 +15,11 @@ type Modem interface {
 	AddOutboundHandler(h func([]byte))
 }
 
+// DeadNotifier is implemented by a Modem whose link can die and needs reconnecting by the caller.
+type DeadNotifier interface {
+	Dead() <-chan struct{}
+}
+
 // PacketFilter decides whether a virtual radio wants to handle a packet.
 type PacketFilter func(pkt *meshcore.Packet) bool
 

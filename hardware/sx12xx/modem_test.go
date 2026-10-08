@@ -14,7 +14,10 @@ import (
 	"github.com/OwlShack/meshcore-go/node"
 )
 
-var _ node.Modem = (*Modem)(nil)
+var (
+	_ node.Modem        = (*Modem)(nil)
+	_ node.DeadNotifier = (*Modem)(nil)
+)
 
 type fakeRadio struct {
 	mu               sync.Mutex
