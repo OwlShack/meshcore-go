@@ -6,13 +6,18 @@ import (
 	"sync"
 	"time"
 
-	meshcore "github.com/meshcore-go/meshcore-go"
+	meshcore "github.com/OwlShack/meshcore-go"
 )
 
 type Modem interface {
 	SendData(data []byte) error
 	SetDataHandler(func(data []byte, snr float32, rssi int8, hasSignalInfo bool))
 	AddOutboundHandler(h func([]byte))
+}
+
+// DeadNotifier is implemented by a Modem whose link can die and needs reconnecting by the caller.
+type DeadNotifier interface {
+	Dead() <-chan struct{}
 }
 
 // PacketFilter decides whether a virtual radio wants to handle a packet.

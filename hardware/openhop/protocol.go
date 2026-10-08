@@ -177,6 +177,9 @@ func EncodeFrame(cmd byte, payload []byte) []byte {
 	return binary.LittleEndian.AppendUint16(buf, CRC16CCITT(buf[1:]))
 }
 
+// MeshCoreSyncWord is the private LoRa sync word MeshCore radios use.
+const MeshCoreSyncWord uint16 = 0x12
+
 // RadioConfig is the 14-byte packed SET_CONFIG payload.
 type RadioConfig struct {
 	FreqHz      uint32
@@ -184,7 +187,7 @@ type RadioConfig struct {
 	SF          uint8  // 5..12
 	CR          uint8  // 5..8, for 4/5..4/8
 	TxPower     int8   // dBm, clamped by the board's maximum
-	SyncWord    uint16 // 0x12 private, 0x34 public
+	SyncWord    uint16 // 0x12 private, 0x34 public; Validate turns 0 into MeshCoreSyncWord
 	PreambleLen uint8
 }
 
@@ -243,6 +246,9 @@ func (c *RadioConfig) Validate() error {
 	}
 	if c.PreambleLen == 0 {
 		return fmt.Errorf("openhop: preamble length not set")
+	}
+	if c.SyncWord == 0 {
+		c.SyncWord = MeshCoreSyncWord
 	}
 	return nil
 }

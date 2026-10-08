@@ -141,7 +141,8 @@ func TestModem_TxWaitFromEstimator(t *testing.T) {
 	est := func(n int) uint32 { return uint32(n) * 10 } // 255 -> 2550 ms, 5 -> 50 ms
 	m := NewKissModem(newMockTransport(), WithTxAirtimeEstimator(est), WithTxFlowControl(time.Second))
 	defer m.Close()
-	want := 500*time.Millisecond + (2550+50)*time.Millisecond*3/2 + time.Second
+	csma := 17 * 100 * time.Millisecond // 99% of draws at persistence 63, 100 ms slots
+	want := 500*time.Millisecond + csma + (2550+50)*time.Millisecond*3/2 + time.Second
 	if got := m.txWait(5); got != want {
 		t.Fatalf("txWait = %v, want %v", got, want)
 	}

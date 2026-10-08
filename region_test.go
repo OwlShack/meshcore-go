@@ -213,3 +213,80 @@ func TestNewRegionFromKey(t *testing.T) {
 		t.Fatal("NewRegionFromKey re-derived the key from the name")
 	}
 }
+
+func TestNewRegion_KeyDerivation(t *testing.T) {
+	cases := []struct {
+		name    string
+		wantKey RegionKey
+	}{
+		{"nz", DeriveRegionKey("#nz")},
+		{"#nz", DeriveRegionKey("#nz")},
+		{"$private", RegionKey{}},
+	}
+	for _, c := range cases {
+		r := NewRegion(c.name)
+		if r.Name != c.name {
+			t.Errorf("NewRegion(%q).Name = %q, want it unchanged", c.name, r.Name)
+		}
+		if r.Key != c.wantKey {
+			t.Errorf("NewRegion(%q).Key = %x, want %x", c.name, r.Key, c.wantKey)
+		}
+	}
+}
+
+func TestRegion_MatchesPacket_ZeroKeyNeverMatches(t *testing.T) {
+	r := NewRegion("$private")
+	pkt := &Packet{
+		Header:  MakeHeader(RouteTypeTransportFlood, PayloadTypeTxtMsg, 0),
+		Payload: []byte{0x01, 0x02},
+	}
+	pkt.TransportCode1 = r.CalcTransportCode(pkt)
+	if r.MatchesPacket(pkt) {
+		t.Error("a region without a key matched a packet")
+	}
+}
+
+func TestPacket_SetScope(t *testing.T) {
+	r := NewRegion("nz")
+	pkt := &Packet{
+		Header:  MakeHeader(RouteTypeFlood, PayloadTypeGrpTxt, 0),
+		Payload: []byte{0x01, 0x02, 0x03},
+	}
+
+	v1 := &Packet{Header: MakeHeader(RouteTypeFlood, PayloadTypeGrpTxt, 1)}
+	if v1.SetScope(r); v1.PayloadVer() != 1 {
+		t.Fatalf("SetScope changed payload version to %d", v1.PayloadVer())
+	}
+
+	pkt.SetScope(r)
+	data, err := pkt.ToBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := PacketFromBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RouteType() != RouteTypeTransportFlood || got.PayloadType() != PayloadTypeGrpTxt {
+		t.Fatalf("header = %s/%s, want TRANSPORT_FLOOD/GRP_TXT", got.RouteTypeString(), got.PayloadTypeString())
+	}
+	if !r.MatchesPacket(got) || got.TransportCode2 != 0 {
+		t.Fatalf("codes = %04x/%04x, want region code/0", got.TransportCode1, got.TransportCode2)
+	}
+
+	pkt.SetScope(nil)
+	if pkt.RouteType() != RouteTypeFlood || pkt.TransportCode1 != 0 {
+		t.Fatalf("after SetScope(nil): route %s code %04x, want FLOOD/0", pkt.RouteTypeString(), pkt.TransportCode1)
+	}
+
+	pkt.SetScope(NewRegion("$private"))
+	if pkt.RouteType() != RouteTypeFlood {
+		t.Fatalf("keyless scope gave route %s, want FLOOD", pkt.RouteTypeString())
+	}
+
+	direct := &Packet{Header: MakeHeader(RouteTypeDirect, PayloadTypeTxtMsg, 0), Payload: []byte{0x01}}
+	direct.SetScope(r)
+	if direct.RouteType() != RouteTypeDirect || direct.TransportCode1 != 0 {
+		t.Fatal("SetScope changed a direct packet")
+	}
+}

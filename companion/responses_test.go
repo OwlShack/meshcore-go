@@ -15,7 +15,7 @@ func TestParseResponse(t *testing.T) {
 	}
 	selfPayload = append(selfPayload, 0x44, 0x33, 0x22, 0x11)
 	selfPayload = append(selfPayload, 0xfe, 0xff, 0xff, 0xff)
-	selfPayload = append(selfPayload, 0xaa, 0xbb, 0xcc)
+	selfPayload = append(selfPayload, 0x02, 0x01, 0x1b) // multi_acks, advert_loc_policy, env<<4|loc<<2|base
 	selfPayload = append(selfPayload, 0x01)
 	selfPayload = append(selfPayload, 0x04, 0x03, 0x02, 0x01)
 	selfPayload = append(selfPayload, 0x08, 0x07, 0x06, 0x05)
@@ -249,6 +249,8 @@ func TestParseResponse(t *testing.T) {
 		{name: "push control data", frameData: hexBytes(t, "8ef9d602deadbeef"), wantCode: PushControlData, wantData: PushControlDataResp{SNR: -1.75, RSSI: int8(-42), PathLen: 0x02, Payload: []byte{0xde, 0xad, 0xbe, 0xef}}}, // -7/4 dB
 		{name: "default flood scope null", frameData: []byte{RespDefaultFloodScope}, wantCode: RespDefaultFloodScope, wantData: DefaultFloodScopeResponse{}},
 		{name: "default flood scope named", frameData: append([]byte{RespDefaultFloodScope}, defaultFloodScopePayload...), wantCode: RespDefaultFloodScope, wantData: DefaultFloodScopeResponse{Name: "region1", Key: floodScopeKey}},
+		{name: "cli reply", frameData: append([]byte{RespCLIReply}, "> 22"...), wantCode: RespCLIReply, wantData: CLIReplyResponse{Text: "> 22"}},
+		{name: "cli reply empty", frameData: []byte{RespCLIReply}, wantCode: RespCLIReply, wantData: CLIReplyResponse{}},
 		{name: "push login fail", frameData: hexBytes(t, "8600aabbccddeeff"), wantCode: PushLoginFail, wantData: PushLoginFailResponse{PubKeyPrefix: pushLoginFailPrefix}},
 		{name: "push contact deleted", frameData: append([]byte{PushContactDeleted}, pushContactDeletedKey[:]...), wantCode: PushContactDeleted, wantData: PushContactDeletedResponse{PublicKey: pushContactDeletedKey}},
 		{name: "push contacts full", frameData: []byte{PushContactsFull}, wantCode: PushContactsFull, wantData: PushContactsFullResponse{}},
@@ -320,7 +322,11 @@ func TestParseResponse(t *testing.T) {
 				PublicKey:         publicKey,
 				AdvertLatitude:    0x11223344,
 				AdvertLongitude:   -2,
-				Reserved:          [3]byte{0xaa, 0xbb, 0xcc},
+				MultiAcks:         2,
+				AdvertLocPolicy:   1,
+				TelemetryModeBase: 3,
+				TelemetryModeLoc:  2,
+				TelemetryModeEnv:  1,
 				ManualAddContacts: 0x01,
 				RadioFrequency:    0x01020304,
 				RadioBandwidth:    0x05060708,
@@ -746,4 +752,21 @@ func hexOf(s string, width int) string {
 	b := make([]byte, width)
 	copy(b, s)
 	return hex.EncodeToString(b)
+}
+
+func TestCustomVarsMap(t *testing.T) {
+	tests := []struct {
+		vars string
+		want map[string]string
+	}{
+		{"", map[string]string{}},
+		{"gps:1", map[string]string{"gps": "1"}},
+		{"gps:1,gps_interval:900", map[string]string{"gps": "1", "gps_interval": "900"}},
+		{"name:a:b,empty:", map[string]string{"name": "a:b", "empty": ""}},
+	}
+	for _, tt := range tests {
+		if got := (CustomVarsResponse{Vars: tt.vars}).Map(); !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("Map(%q) = %v, want %v", tt.vars, got, tt.want)
+		}
+	}
 }

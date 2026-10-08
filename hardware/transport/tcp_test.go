@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/meshcore-go/meshcore-go/hardware"
+	"github.com/OwlShack/meshcore-go/hardware"
 )
 
 const wait = 2 * time.Second

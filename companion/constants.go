@@ -1,5 +1,7 @@
 package companion
 
+import meshcore "github.com/OwlShack/meshcore-go"
+
 // SupportedProtocolVersion is the app_target_ver this library advertises in CMD_DEVICE_QUERY.
 const SupportedProtocolVersion = 3
 
@@ -76,6 +78,7 @@ const (
 	CmdSetDefaultFloodScope byte = 63
 	CmdGetDefaultFloodScope byte = 64
 	CmdSendRawPacket        byte = 65
+	CmdRunCLICommand        byte = 66
 )
 
 // Response codes.
@@ -109,6 +112,7 @@ const (
 	RespAllowedRepeatFreq byte = 26
 	RespChannelDataRecv   byte = 27
 	RespDefaultFloodScope byte = 28
+	RespCLIReply          byte = 29
 )
 
 // Push codes (asynchronous firmware notifications, codes >= 0x80).
@@ -169,11 +173,21 @@ const (
 // OutPathUnknown is the firmware's OUT_PATH_UNKNOWN path_len.
 const OutPathUnknown byte = 0xFF
 
-// Text message types (firmware TXT_TYPE_*).
+// Text message types, the same as the meshcore TxtType constants.
 const (
-	TxtTypePlain       byte = 0
-	TxtTypeCLIData     byte = 1
-	TxtTypeSignedPlain byte = 2 // text preceded by a 4-byte sender pubkey prefix
+	TxtTypePlain       = meshcore.TxtTypePlain
+	TxtTypeCLIData     = meshcore.TxtTypeCLIData
+	TxtTypeSignedPlain = meshcore.TxtTypeSignedPlain
+	TxtTypeCLICommand  = meshcore.TxtTypeCLICommand
+)
+
+// Contact flags.
+const (
+	ContactFlagFavourite byte = 0x01
+	ContactFlagTelemBase byte = 0x02
+	ContactFlagTelemLoc  byte = 0x04
+	ContactFlagTelemEnv  byte = 0x08
+	ContactFlagRemoteCLI byte = 0x10 // the contact may run TxtTypeCLICommand on this companion
 )
 
 // Frame size limits.

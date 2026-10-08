@@ -3,7 +3,7 @@ package node
 import (
 	"time"
 
-	meshcore "github.com/meshcore-go/meshcore-go"
+	meshcore "github.com/OwlShack/meshcore-go"
 )
 
 // RouteAction describes what the router decided to do with a received packet.
@@ -38,28 +38,60 @@ func (r *router) route(pkt *meshcore.Packet) RouteAction {
 	switch {
 	case pkt.IsRouteFlood():
 		r.stats.floodReceived.Add(1)
+		if r.node.filterFlood(pkt) {
+			return RouteActionDrop
+		}
 	case pkt.IsRouteDirect():
 		r.stats.directReceived.Add(1)
 		if pkt.PayloadType() == meshcore.PayloadTypeTrace {
 			return r.routeTrace(pkt)
+		}
+		// payload[0]&0x80 marks a zero-hop-only control packet.
+		if pkt.PayloadType() == meshcore.PayloadTypeControl && len(pkt.Payload) > 0 && pkt.Payload[0]&0x80 != 0 {
+			if pkt.PathHashCount() == 0 {
+				return RouteActionDeliver
+			}
+			return RouteActionDrop
 		}
 		if pkt.PathHashCount() > 0 {
 			return r.routeDirect(pkt)
 		}
 	}
 
-	if r.seen(pkt) {
+	if !accepted(pkt) || r.selfAdvert(pkt) || r.seen(pkt) {
 		return RouteActionDrop
 	}
 	return RouteActionDeliver
 }
 
-func (r *router) routeDirect(pkt *meshcore.Packet) RouteAction {
-	// payload[0]&0x80 marks a zero-hop-only control packet.
-	if pkt.PayloadType() == meshcore.PayloadTypeControl && len(pkt.Payload) > 0 && pkt.Payload[0]&0x80 != 0 {
-		return RouteActionDrop
+// accepted reports whether a flood or zero-hop packet has a handled type and a long enough payload.
+func accepted(pkt *meshcore.Packet) bool {
+	n := len(pkt.Payload)
+	switch pkt.PayloadType() {
+	case meshcore.PayloadTypeAck:
+		return n >= 4
+	case meshcore.PayloadTypePath, meshcore.PayloadTypeReq, meshcore.PayloadTypeResponse, meshcore.PayloadTypeTxtMsg:
+		return n > 2+2 // dest and src hashes, MAC
+	case meshcore.PayloadTypeAnonReq:
+		return n > 1+meshcore.PubKeySize+2 // dest hash, sender key, MAC
+	case meshcore.PayloadTypeGrpTxt, meshcore.PayloadTypeGrpData:
+		return n > 1+2 // channel hash, MAC
+	case meshcore.PayloadTypeAdvert:
+		return n >= meshcore.MinAdvertSize
+	case meshcore.PayloadTypeMultiPart:
+		return true
+	case meshcore.PayloadTypeRawCustom:
+		return pkt.IsRouteDirect()
 	}
+	return false
+}
 
+// selfAdvert reports whether pkt is this node's own advert heard back.
+func (r *router) selfAdvert(pkt *meshcore.Packet) bool {
+	return pkt.PayloadType() == meshcore.PayloadTypeAdvert && r.node.Identity().IsHashMatch(pkt.Payload[:meshcore.PubKeySize])
+}
+
+func (r *router) routeDirect(pkt *meshcore.Packet) RouteAction {
 	hashes := pkt.PathHashes()
 	if len(hashes) == 0 {
 		return RouteActionDeliver
@@ -104,9 +136,6 @@ func (r *router) routeTrace(pkt *meshcore.Packet) RouteAction {
 	offset := int(uint16(pkt.PathLength) << pathSz)
 
 	if offset >= hashes {
-		if r.seen(pkt) {
-			return RouteActionDrop
-		}
 		return RouteActionDeliver
 	}
 	if offset+hashSize > hashes {
@@ -118,7 +147,7 @@ func (r *router) routeTrace(pkt *meshcore.Packet) RouteAction {
 		return RouteActionDrop
 	}
 
-	pkt.Path = append(pkt.Path[:len(pkt.Path):len(pkt.Path)], byte(int8(pkt.SNR*4)))
+	pkt.Path = append(pkt.Path[:len(pkt.Path):len(pkt.Path)], byte(meshcore.SNRToWire(pkt.SNR)))
 	pkt.PathLength++
 	r.stats.directRelays.Add(1)
 	r.forward(pkt, TracePriority, r.directDelay, 0)
@@ -207,7 +236,7 @@ func (r *router) relayFlood(pkt *meshcore.Packet) {
 		return
 	}
 
-	if !r.canForward(pkt) {
+	if r.node.regions.FindFloodMatch(pkt) == nil || !r.canForward(pkt) {
 		return
 	}
 

@@ -264,7 +264,7 @@ func TestNewLocalIdentityFromSeed(t *testing.T) {
 	if !li1.Matches(li2.Identity) {
 		t.Error("same seed should produce same identity")
 	}
-	if li1.Seed() != seed {
+	if got, ok := li1.Seed(); !ok || got != seed {
 		t.Error("Seed() should return the original seed")
 	}
 }
@@ -352,7 +352,7 @@ func TestLocalIdentitySharedSecretMatchesDeriveSharedSecret(t *testing.T) {
 		t.Fatalf("SharedSecret: %v", err)
 	}
 
-	seed := li.Seed()
+	seed, _ := li.Seed()
 	viaDirect, err := DeriveSharedSecret(seed[:], peer.PublicKeyBytes())
 	if err != nil {
 		t.Fatalf("DeriveSharedSecret: %v", err)
@@ -374,7 +374,7 @@ func TestLocalIdentityX25519PrivateKey(t *testing.T) {
 		t.Errorf("X25519PrivateKey length = %d, want 32", len(x25519Priv))
 	}
 
-	seed := li.Seed()
+	seed, _ := li.Seed()
 	direct := edPrivateToX25519(seed[:])
 	if !bytes.Equal(x25519Priv, direct) {
 		t.Error("X25519PrivateKey should match edPrivateToX25519")
@@ -455,6 +455,16 @@ func TestExpandedKey_DerivesFirmwarePubKey(t *testing.T) {
 	}
 	if !bytes.Equal(li.PublicKeyBytes(), hexDecode(t, fwTestPub)) {
 		t.Fatalf("derived pubkey mismatch:\n got  %x\n want %s", li.PublicKeyBytes(), fwTestPub)
+	}
+}
+
+func TestExpandedKey_HasNoSeed(t *testing.T) {
+	li, err := NewLocalIdentityFromExpandedKey(hexDecode(t, fwTestPrv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := li.Seed(); ok {
+		t.Fatal("Seed() reported ok for an expanded-key identity")
 	}
 }
 

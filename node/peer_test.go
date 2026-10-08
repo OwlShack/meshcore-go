@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	meshcore "github.com/meshcore-go/meshcore-go"
+	meshcore "github.com/OwlShack/meshcore-go"
 )
 
 func makeSignedAdvert(id meshcore.LocalIdentity, timestamp uint32, name string) *meshcore.Advert {

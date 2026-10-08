@@ -31,6 +31,11 @@ func (p *Packet) IsMarkedDoNotRetransmit() bool { return p.noRetransmit }
 // SNRFromWire converts an on-wire SNR byte (quarter-dB units) to real decibels.
 func SNRFromWire(b int8) float32 { return float32(b) / 4 }
 
+// SNRToWire converts an SNR in decibels to its on-wire quarter-dB byte, truncating as firmware does and clamping to int8.
+func SNRToWire(snr float32) int8 {
+	return int8(max(-128, min(127, snr*4)))
+}
+
 func snrDBFromWire(b int8) float32 { return SNRFromWire(b) }
 
 // PathSNRdB converts a per-hop SNR byte from a trace path into real decibels.
@@ -40,8 +45,13 @@ func MakeHeader(routeType, payloadType, payloadVer byte) byte {
 	return (payloadVer << 6) | (payloadType << 2) | routeType
 }
 
-// pathLenFields splits a path_len byte into bytes-per-hop (bits 6-7, plus 1) and hop count (bits 0-5).
-func pathLenFields(pathLen uint8) (hashSize, hashCount uint8) {
+// MakePathLen encodes a path_len byte from bytes per hop (1 to 3) and hop count (0 to 63).
+func MakePathLen(hashSize, hashCount uint8) uint8 {
+	return (hashSize-1)<<6 | hashCount&63
+}
+
+// PathLenFields splits a path_len byte into bytes per hop (bits 6-7, plus 1) and hop count (bits 0-5).
+func PathLenFields(pathLen uint8) (hashSize, hashCount uint8) {
 	return pathLen>>6 + 1, pathLen & 63
 }
 
@@ -59,7 +69,7 @@ func splitPathHashes(path []byte, hashSize, hashCount uint8) [][]byte {
 }
 
 func IsValidPathLen(pathLen uint8) bool {
-	hashSize, hashCount := pathLenFields(pathLen)
+	hashSize, hashCount := PathLenFields(pathLen)
 	if hashSize == 4 {
 		return false
 	}
@@ -153,10 +163,10 @@ func (p *Packet) ToBytes() ([]byte, error) {
 }
 
 // PathHashSize returns the per-hop hash size in bytes (1-3).
-func (p *Packet) PathHashSize() uint8 { s, _ := pathLenFields(p.PathLength); return s }
+func (p *Packet) PathHashSize() uint8 { s, _ := PathLenFields(p.PathLength); return s }
 
 // PathHashCount returns the hop count.
-func (p *Packet) PathHashCount() uint8 { _, c := pathLenFields(p.PathLength); return c }
+func (p *Packet) PathHashCount() uint8 { _, c := PathLenFields(p.PathLength); return c }
 
 func (p *Packet) PathHashes() [][]byte {
 	return splitPathHashes(p.Path, p.PathHashSize(), p.PathHashCount())
@@ -234,6 +244,9 @@ func (p *Packet) Validate() error {
 	if !IsValidPathLen(p.PathLength) {
 		return fmt.Errorf("invalid path length byte: 0x%02x", p.PathLength)
 	}
+	if n := int(p.PathHashCount()) * int(p.PathHashSize()); len(p.Path) != n {
+		return fmt.Errorf("path length byte 0x%02x needs %d path bytes, have %d", p.PathLength, n, len(p.Path))
+	}
 	if len(p.Payload) > MaxPacketPayload {
 		return fmt.Errorf("payload too large: %d bytes, max %d", len(p.Payload), MaxPacketPayload)
 	}
@@ -257,7 +270,7 @@ func (p *Packet) IsTransport() bool {
 
 // AppendPathHash appends a path hash, returning false if the path is already full.
 func (p *Packet) AppendPathHash(hash []byte) bool {
-	hashSize, count := pathLenFields(p.PathLength)
+	hashSize, count := PathLenFields(p.PathLength)
 	if len(hash) < int(hashSize) {
 		return false
 	}
@@ -274,7 +287,7 @@ func (p *Packet) AppendPathHash(hash []byte) bool {
 // RemoveFirstPathHash removes the first hash from the packet's path, returning
 // false if the path is empty.
 func (p *Packet) RemoveFirstPathHash() bool {
-	hashSize, count := pathLenFields(p.PathLength)
+	hashSize, count := PathLenFields(p.PathLength)
 	if count == 0 || len(p.Path) < int(hashSize) {
 		return false
 	}

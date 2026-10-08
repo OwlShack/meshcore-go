@@ -11,6 +11,7 @@ type RouteStats struct {
 	FloodRelays      uint64 // packets re-flooded
 	DirectRelays     uint64 // packets relayed to a next hop
 	Delivered        uint64 // packets handed to local handlers
+	RxAirtimeMs      uint64 // estimated airtime of received packets; zero without an airtime estimator
 }
 
 type routeCounters struct {
@@ -21,6 +22,7 @@ type routeCounters struct {
 	floodRelays      atomic.Uint64
 	directRelays     atomic.Uint64
 	delivered        atomic.Uint64
+	rxAirtimeMs      atomic.Uint64
 }
 
 // RouteStats returns a snapshot of this node's routing counters.
@@ -34,5 +36,6 @@ func (n *Node) RouteStats() RouteStats {
 		FloodRelays:      c.floodRelays.Load(),
 		DirectRelays:     c.directRelays.Load(),
 		Delivered:        c.delivered.Load(),
+		RxAirtimeMs:      c.rxAirtimeMs.Load(),
 	}
 }

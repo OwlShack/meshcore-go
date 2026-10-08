@@ -3,6 +3,7 @@ package meshcore
 import (
 	"bytes"
 	"crypto/ed25519"
+	"encoding/binary"
 	"encoding/hex"
 	"reflect"
 	"strings"
@@ -429,20 +430,43 @@ func TestAdvertAppDataFromBytes(t *testing.T) {
 }
 
 func TestAdvertFromBytesAppDataParseError(t *testing.T) {
-	pubkey := make([]byte, 32)
-	timestamp := []byte{0x00, 0x00, 0x00, 0x00}
-	signature := make([]byte, 64)
-	badAppData := []byte{AdvertTypeChat | AdvertLatLonMask}
+	var seed [ed25519.SeedSize]byte
+	seed[0] = 7
+	id := NewLocalIdentityFromSeed(seed)
+	adv := &Advert{PublicKey: id.Identity, Timestamp: 42, RawAppData: []byte{AdvertTypeChat | AdvertLatLonMask}}
+	adv.SignWith(id)
+	data, _ := adv.ToBytes()
 
-	data := make([]byte, 0, 32+4+64+1)
-	data = append(data, pubkey...)
-	data = append(data, timestamp...)
-	data = append(data, signature...)
-	data = append(data, badAppData...)
+	got, err := AdvertFromBytes(data)
+	if err != nil {
+		t.Fatalf("unparseable app data rejected a signed advert: %v", err)
+	}
+	if !got.Verify() || got.AppData() != (AdvertAppData{}) {
+		t.Fatalf("Verify = %v, AppData = %+v", got.Verify(), got.AppData())
+	}
+}
 
-	_, err := AdvertFromBytes(data)
-	if err == nil {
-		t.Fatal("expected error from bad appdata, got nil")
+func TestAdvertFromBytesOversizedAppData(t *testing.T) {
+	var seed [ed25519.SeedSize]byte
+	seed[0] = 9
+	id := NewLocalIdentityFromSeed(seed)
+	app := append([]byte{AdvertTypeChat | AdvertNameMask}, bytes.Repeat([]byte{'N'}, MaxAdvertDataSize-1)...)
+	msg := binary.LittleEndian.AppendUint32(id.PublicKeyBytes(), 77)
+	sig := ed25519.Sign(id.PrivateKey(), append(msg, app...))
+	data := append(append(append(msg, sig...), app...), "overflow"...)
+
+	adv, err := AdvertFromBytes(data)
+	if err != nil {
+		t.Fatalf("AdvertFromBytes: %v", err)
+	}
+	if !adv.Verify() {
+		t.Fatal("signature over the first 32 app data bytes did not verify")
+	}
+	if adv.AppData().Name != strings.Repeat("N", MaxAdvertDataSize-1) {
+		t.Fatalf("Name = %q", adv.AppData().Name)
+	}
+	if back, _ := adv.ToBytes(); !bytes.Equal(back, data) {
+		t.Fatal("ToBytes did not keep the bytes past 32 for relay")
 	}
 }
 
@@ -540,14 +564,6 @@ func TestAdvertFromBytesValidation(t *testing.T) {
 		}
 		if len(advert.RawAppData) != 0 {
 			t.Errorf("RawAppData len = %d, want 0", len(advert.RawAppData))
-		}
-	})
-
-	t.Run("oversized app_data", func(t *testing.T) {
-		data := make([]byte, MinAdvertSize+MaxAdvertDataSize+1)
-		_, err := AdvertFromBytes(data)
-		if err == nil {
-			t.Fatal("expected error for oversized app_data, got nil")
 		}
 	})
 
@@ -733,4 +749,64 @@ func FuzzAdvertFromBytes(f *testing.F) {
 			t.Fatalf("app data drift:\n raw   %x -> %+v\n again %x -> %+v", adv.RawAppData, ad, raw, *again)
 		}
 	})
+}
+
+func TestAdvertAppDataUnknownTypeRoundTrip(t *testing.T) {
+	for typ := byte(5); typ <= 15; typ++ {
+		raw := []byte{typ | AdvertNameMask, 'x'}
+		ad, err := AdvertAppDataFromBytes(raw)
+		if err != nil || ad.Type != "" || ad.RawType != typ {
+			t.Fatalf("type %d parsed as %+v, err %v", typ, ad, err)
+		}
+		if back, err := ad.ToBytes(); err != nil || !bytes.Equal(back, raw) {
+			t.Fatalf("type %d ToBytes = %x, err %v, want %x", typ, back, err, raw)
+		}
+	}
+	if _, err := (&AdvertAppData{RawType: 16}).ToBytes(); err == nil || !strings.HasPrefix(err.Error(), "meshcore: ") {
+		t.Fatalf("RawType 16 err = %v", err)
+	}
+	if _, err := (&AdvertAppData{Type: "ROOM", RawType: 9}).ToBytes(); err == nil {
+		t.Fatal("Type ROOM with RawType 9 encoded")
+	}
+	if b, err := (&AdvertAppData{Type: "ROOM", RawType: AdvertTypeRoom}).ToBytes(); err != nil || b[0] != AdvertTypeRoom {
+		t.Fatalf("agreeing Type and RawType = %x, err %v", b, err)
+	}
+	ad, _ := AdvertAppDataFromBytes([]byte{AdvertTypeChat})
+	ad.Type = "ROOM"
+	if b, err := ad.ToBytes(); err != nil || b[0] != AdvertTypeRoom {
+		t.Fatalf("edited Type of a parsed CHAT = %x, err %v", b, err)
+	}
+}
+
+func TestAdvertAppDataErr(t *testing.T) {
+	base := strings.Repeat("00", MinAdvertSize)
+	for _, tc := range []struct {
+		app     string
+		wantErr bool
+	}{
+		{"", false},
+		{"81" + "4e", false},
+		{"11" + "0102", true}, // LATLON flag with 2 of 8 bytes
+	} {
+		adv, err := AdvertFromBytes(mustHex(t, base+tc.app))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.app, err)
+		}
+		if got := adv.AppDataErr(); (got != nil) != tc.wantErr || (got != nil && adv.AppData() != (AdvertAppData{})) {
+			t.Fatalf("%s: AppDataErr = %v, AppData = %+v", tc.app, got, adv.AppData())
+		}
+	}
+}
+
+func TestIsValidAdvertName(t *testing.T) {
+	for _, name := range []string{"Base 1", "", "kiwi-node_2", "caf\u00e9"} {
+		if !IsValidAdvertName(name) {
+			t.Errorf("IsValidAdvertName(%q) = false", name)
+		}
+	}
+	for _, c := range "[]\\:,?*" {
+		if IsValidAdvertName("a" + string(c) + "b") {
+			t.Errorf("IsValidAdvertName accepted %q", c)
+		}
+	}
 }

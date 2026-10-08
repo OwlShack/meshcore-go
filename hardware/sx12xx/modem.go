@@ -19,7 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/meshcore-go/meshcore-go/hardware"
+	"github.com/OwlShack/meshcore-go/hardware"
 )
 
 // Errors returned by Modem.
@@ -281,7 +281,7 @@ func (m *Modem) configure(cfg *hardware.RadioConfig) error {
 	if err := m.radio.SetModulationParams(int(cfg.SF), Bandwidth(cfg.BwHz), codingRate(cfg.CR), true); err != nil {
 		return err
 	}
-	preamble := PreambleForSF(cfg.SF)
+	preamble := hardware.PreambleForSF(cfg.SF)
 	if err := m.radio.SetPacketParams(preamble, true, true, false); err != nil {
 		return err
 	}
@@ -302,17 +302,16 @@ func (m *Modem) configure(cfg *hardware.RadioConfig) error {
 }
 
 // PreambleForSF is the preamble length in symbols for a given spreading factor.
+//
+// Deprecated: use hardware.PreambleForSF.
 func PreambleForSF(sf uint8) uint16 {
-	if sf <= 8 {
-		return 32
-	}
-	return 16
+	return hardware.PreambleForSF(sf)
 }
 
 // PacketWindows returns how long a packet may hold the channel between
 // preamble-detect and header-valid, and between header-valid and rx-done.
 func PacketWindows(cfg *hardware.RadioConfig) (preamble, payload time.Duration) {
-	symbols := float64(PreambleForSF(cfg.SF))
+	symbols := float64(hardware.PreambleForSF(cfg.SF))
 	tsym := math.Exp2(float64(cfg.SF)) / float64(cfg.BwHz) * float64(time.Second)
 	sfCoeff := 4.25
 	if cfg.SF == 5 || cfg.SF == 6 {
@@ -356,14 +355,13 @@ func (m *Modem) PacketScore(snr float64, packetLen int) float64 {
 	return hardware.PacketScore(snr, m.sf, packetLen)
 }
 
-// NoiseFloor returns the measured noise floor in dBm, clamped to -120, or zero
-// before the first round completes.
-func (m *Modem) NoiseFloor() int {
+// NoiseFloor returns the measured noise floor in dBm, clamped to -120, and whether one has been measured yet.
+func (m *Modem) NoiseFloor() (float64, bool) {
 	floor := m.noiseFloor.Load()
-	if floor < noiseFloorFloorDBm {
-		return noiseFloorFloorDBm
+	if floor == 0 {
+		return 0, false
 	}
-	return int(floor)
+	return float64(max(floor, noiseFloorFloorDBm)), true
 }
 
 // SetDataHandler sets the callback for received packets.

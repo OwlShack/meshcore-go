@@ -1,7 +1,9 @@
 package meshcore
 
 import (
+	"bytes"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -270,5 +272,42 @@ func TestGroupDataRoundTrip(t *testing.T) {
 	decryptedTrimmed := strings.TrimRight(string(decrypted), "\x00")
 	if decryptedTrimmed != string(plaintext) {
 		t.Errorf("Decrypt() = %q, want %q", decryptedTrimmed, plaintext)
+	}
+}
+
+func TestGroupDataPayloadRoundTrip(t *testing.T) {
+	ch := NewChannelFromHashtag("data")
+	p := GroupDataPayload{DataType: 0x1234, Data: []byte("hi")}
+	plain, err := BuildGroupDataPayload(p)
+	if err != nil || !bytes.Equal(plain, []byte{0x34, 0x12, 0x02, 'h', 'i'}) {
+		t.Fatalf("BuildGroupDataPayload = %x, err %v", plain, err)
+	}
+	gd, err := NewGroupData(ch.Hash, ch.PSK, plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, _ := gd.ToBytes()
+	back, err := GroupDataFromBytes(wire)
+	if err != nil || back.ChannelHash != ch.Hash {
+		t.Fatalf("GroupDataFromBytes = %+v, err %v", back, err)
+	}
+	got, err := back.DecryptStruct(ch.PSK)
+	if err != nil || got.DataType != p.DataType || !bytes.Equal(got.Data, p.Data) {
+		t.Fatalf("DecryptStruct = %+v, err %v", got, err)
+	}
+}
+
+func TestGroupDataPayloadLimits(t *testing.T) {
+	if _, err := BuildGroupDataPayload(GroupDataPayload{DataType: GroupDataTypeDev, Data: make([]byte, MaxGroupDataLength)}); err != nil {
+		t.Fatalf("max length rejected: %v", err)
+	}
+	if _, err := BuildGroupDataPayload(GroupDataPayload{Data: make([]byte, MaxGroupDataLength+1)}); err == nil || !strings.HasPrefix(err.Error(), "meshcore: ") {
+		t.Fatalf("over-long data err = %v", err)
+	}
+	if _, err := ParseGroupDataPayload([]byte{0xFF, 0xFF, 3, 'a', 'b'}); !errors.Is(err, ErrTooShort) {
+		t.Fatalf("length past the payload err = %v", err)
+	}
+	if _, err := ParseGroupDataPayload([]byte{0, 0}); err == nil {
+		t.Fatal("2-byte payload parsed")
 	}
 }

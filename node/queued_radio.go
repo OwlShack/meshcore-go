@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"time"
 
-	meshcore "github.com/meshcore-go/meshcore-go"
+	meshcore "github.com/OwlShack/meshcore-go"
 )
 
 // QueuedRadio wraps a plain Radio with a serializing transmit queue.

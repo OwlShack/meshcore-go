@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/ed25519"
+	"crypto/hmac"
+	"crypto/sha256"
 	"errors"
 	"strings"
 	"testing"
@@ -206,14 +208,10 @@ func TestEncrypt(t *testing.T) {
 		})
 	}
 
-	t.Run("short shared secret panics", func(t *testing.T) {
-		defer func() {
-			if recover() == nil {
-				t.Fatal("expected panic for short shared secret, got nil")
-			}
-		}()
-
-		_, _ = Encrypt([]byte{0x01}, []byte("hello"))
+	t.Run("short shared secret errors", func(t *testing.T) {
+		if _, err := Encrypt([]byte{0x01}, []byte("hello")); err == nil {
+			t.Fatal("expected error for short shared secret")
+		}
 	})
 }
 
@@ -311,14 +309,10 @@ func TestDecrypt(t *testing.T) {
 		}
 	})
 
-	t.Run("short shared secret panics", func(t *testing.T) {
-		defer func() {
-			if recover() == nil {
-				t.Fatal("expected panic for short shared secret, got nil")
-			}
-		}()
-
-		_, _ = Decrypt([]byte{0x01}, []byte("0123456789ABCDEF"))
+	t.Run("short shared secret errors", func(t *testing.T) {
+		if _, err := Decrypt([]byte{0x01}, []byte("0123456789ABCDEF")); err == nil {
+			t.Fatal("expected error for short shared secret")
+		}
 	})
 }
 
@@ -457,6 +451,17 @@ func TestMACThenDecrypt(t *testing.T) {
 		}
 		if decrypted != nil {
 			t.Error("expected nil for wrong key, got data")
+		}
+	})
+
+	t.Run("validly MACed partial block is rejected", func(t *testing.T) {
+		enc := make([]byte, aes.BlockSize+1)
+		mac := hmac.New(sha256.New, key)
+		mac.Write(enc)
+		src := append(mac.Sum(nil)[:cipherMACSize], enc...)
+
+		if _, err := MACThenDecrypt(key, src); !errors.Is(err, ErrNotBlockAligned) {
+			t.Fatalf("error = %v, want ErrNotBlockAligned", err)
 		}
 	})
 

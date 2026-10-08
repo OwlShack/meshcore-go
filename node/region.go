@@ -1,9 +1,10 @@
 package node
 
 import (
+	"strings"
 	"sync"
 
-	meshcore "github.com/meshcore-go/meshcore-go"
+	meshcore "github.com/OwlShack/meshcore-go"
 )
 
 // RegionMap is a thread-safe set of regions stored by pointer; treat a Region as immutable once added.
@@ -12,6 +13,7 @@ type RegionMap struct {
 	regions  []*meshcore.Region
 	wildcard meshcore.Region
 	nextID   uint16
+	def      string
 }
 
 func NewRegionMap() *RegionMap {
@@ -67,7 +69,7 @@ func (rm *RegionMap) Remove(name string) bool {
 	defer rm.mu.Unlock()
 
 	for i, r := range rm.regions {
-		if r.Name == name {
+		if sameRegionName(r.Name, name) {
 			rm.regions = append(rm.regions[:i], rm.regions[i+1:]...)
 			return true
 		}
@@ -75,14 +77,39 @@ func (rm *RegionMap) Remove(name string) bool {
 	return false
 }
 
+// Get finds a region by name, ignoring a leading '#'.
 func (rm *RegionMap) Get(name string) *meshcore.Region {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
+	return rm.get(name)
+}
 
+func (rm *RegionMap) get(name string) *meshcore.Region {
 	for _, r := range rm.regions {
-		if r.Name == name {
+		if sameRegionName(r.Name, name) {
 			return r
 		}
+	}
+	return nil
+}
+
+func sameRegionName(a, b string) bool {
+	return strings.TrimPrefix(a, "#") == strings.TrimPrefix(b, "#")
+}
+
+// SetDefault names the region the node's own floods are scoped to; "" clears it.
+func (rm *RegionMap) SetDefault(name string) {
+	rm.mu.Lock()
+	rm.def = name
+	rm.mu.Unlock()
+}
+
+// Default returns the default region, or nil when none is set or it has no key.
+func (rm *RegionMap) Default() *meshcore.Region {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+	if r := rm.get(rm.def); rm.def != "" && r != nil && !r.Key.IsZero() {
+		return r
 	}
 	return nil
 }
@@ -124,4 +151,17 @@ func (rm *RegionMap) FindFloodMatch(pkt *meshcore.Packet) *meshcore.Region {
 	}
 	w := rm.wildcard
 	return &w
+}
+
+// ReplyScope returns req's own region, nil for an allowed unscoped flood, otherwise Default.
+func (rm *RegionMap) ReplyScope(req *meshcore.Packet) *meshcore.Region {
+	if req.IsRouteFlood() {
+		if r := rm.FindFloodMatch(req); r != nil {
+			if rm.IsWildcard(r) {
+				return nil
+			}
+			return r
+		}
+	}
+	return rm.Default()
 }

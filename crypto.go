@@ -22,6 +22,8 @@ var (
 	ErrBadMAC = errors.New("meshcore: mac mismatch")
 	// ErrTooShort is returned when a payload is shorter than its fixed header.
 	ErrTooShort = errors.New("meshcore: data too short")
+	// ErrNotBlockAligned is returned when ciphertext is not a whole number of AES blocks.
+	ErrNotBlockAligned = errors.New("meshcore: ciphertext not block aligned")
 )
 
 // DeriveSharedSecret computes an X25519 shared secret from an Ed25519
@@ -108,6 +110,9 @@ func edPublicToX25519(edPub []byte) ([]byte, error) {
 
 // Decrypt decrypts src using AES-128 ECB with the first 16 bytes of sharedSecret.
 func Decrypt(sharedSecret []byte, src []byte) ([]byte, error) {
+	if len(sharedSecret) < cipherKeySize {
+		return nil, fmt.Errorf("meshcore: key is %d bytes, need at least %d", len(sharedSecret), cipherKeySize)
+	}
 	block, err := aes.NewCipher(sharedSecret[:cipherKeySize])
 	if err != nil {
 		return nil, fmt.Errorf("creating cipher: %w", err)
@@ -124,6 +129,9 @@ func Decrypt(sharedSecret []byte, src []byte) ([]byte, error) {
 // Encrypt encrypts src using AES-128 ECB with the first 16 bytes of
 // sharedSecret, zero-padding a partial final block.
 func Encrypt(sharedSecret []byte, src []byte) ([]byte, error) {
+	if len(sharedSecret) < cipherKeySize {
+		return nil, fmt.Errorf("meshcore: key is %d bytes, need at least %d", len(sharedSecret), cipherKeySize)
+	}
 	block, err := aes.NewCipher(sharedSecret[:cipherKeySize])
 	if err != nil {
 		return nil, fmt.Errorf("creating cipher: %w", err)
@@ -172,6 +180,9 @@ func MACThenDecrypt(sharedSecret []byte, src []byte) ([]byte, error) {
 	if len(src) <= cipherMACSize {
 		return nil, fmt.Errorf("%w: %d bytes", ErrTooShort, len(src))
 	}
+	if (len(src)-cipherMACSize)%aes.BlockSize != 0 {
+		return nil, fmt.Errorf("%w: %d bytes", ErrNotBlockAligned, len(src)-cipherMACSize)
+	}
 
 	mac := hmac.New(sha256.New, sharedSecret)
 	mac.Write(src[cipherMACSize:])
@@ -182,6 +193,16 @@ func MACThenDecrypt(sharedSecret []byte, src []byte) ([]byte, error) {
 	}
 
 	return Decrypt(sharedSecret, src[cipherMACSize:])
+}
+
+// macEncrypt is EncryptThenMAC split into MAC and ciphertext fields.
+func macEncrypt(key, plain []byte) (mac [2]byte, enc []byte, err error) {
+	out, err := EncryptThenMAC(key, plain)
+	if err != nil {
+		return mac, nil, err
+	}
+	copy(mac[:], out)
+	return mac, out[cipherMACSize:], nil
 }
 
 // macDecryptErr is MACThenDecrypt for split MAC/ciphertext fields.

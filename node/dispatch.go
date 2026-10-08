@@ -1,9 +1,10 @@
 package node
 
 import (
+	"encoding/binary"
 	"time"
 
-	meshcore "github.com/meshcore-go/meshcore-go"
+	meshcore "github.com/OwlShack/meshcore-go"
 )
 
 // Bounds taken from firmware Dispatcher::checkRecv.
@@ -17,6 +18,7 @@ const (
 // onData runs inline on the radio's read goroutine unless a receive delay is set,
 // which routes every packet through the inbound goroutine to preserve arrival order.
 func (n *Node) onData(pkt *meshcore.Packet) {
+	n.router.stats.rxAirtimeMs.Add(uint64(n.estAirtime(rawLen(pkt))))
 	if n.inbound == nil {
 		n.processPacket(pkt)
 		return
@@ -26,6 +28,15 @@ func (n *Node) onData(pkt *meshcore.Packet) {
 		return
 	}
 	n.queueInbound(pkt)
+}
+
+// rawLen is the serialised length of pkt.
+func rawLen(pkt *meshcore.Packet) int {
+	l := 2 + len(pkt.Path) + len(pkt.Payload)
+	if pkt.IsTransport() {
+		l += 4
+	}
+	return l
 }
 
 func (n *Node) inboundDelay(pkt *meshcore.Packet) time.Duration {
@@ -95,6 +106,7 @@ func (n *Node) processPacket(pkt *meshcore.Packet) {
 		n.handleMultiPartACK(pkt)
 	}
 
+	n.receiveDatagram(pkt)
 	n.dispatchPacket(pkt)
 	n.router.relayFlood(pkt)
 }
@@ -120,11 +132,97 @@ func (n *Node) handleAdvert(pkt *meshcore.Packet) {
 		return
 	}
 
-	if !adv.Verify() {
+	if !adv.Verify() || adv.AppData().Name == "" {
 		return
 	}
 
 	n.peers.UpdateWithHashSize(adv, pkt.SNR, pkt.RSSI, pkt.HasSignalInfo, pkt.Path, pkt.PathHashSize())
+}
+
+// receiveDatagram decrypts a flood or zero-hop datagram addressed to us, marking it do-not-retransmit on success.
+func (n *Node) receiveDatagram(pkt *meshcore.Packet) {
+	if !pkt.IsRouteFlood() && pkt.PathHashCount() > 0 {
+		return
+	}
+	p := pkt.Payload
+	switch pkt.PayloadType() {
+	case meshcore.PayloadTypeTxtMsg, meshcore.PayloadTypeReq, meshcore.PayloadTypeResponse, meshcore.PayloadTypePath:
+		if !n.Identity().IsHashMatch(p[:1]) {
+			return
+		}
+		for _, peer := range n.peers.LookupByHash(p[1:2]) {
+			secret, err := n.secrets.get(peer.Identity)
+			if err != nil {
+				continue
+			}
+			plain, err := meshcore.MACThenDecrypt(secret, p[2:])
+			if err != nil {
+				continue
+			}
+			if pkt.PayloadType() == meshcore.PayloadTypePath && !n.handlePeerPath(pkt, peer, secret, plain) {
+				return
+			}
+			pkt.MarkDoNotRetransmit()
+			return
+		}
+	case meshcore.PayloadTypeAnonReq:
+		if !n.Identity().IsHashMatch(p[:1]) {
+			return
+		}
+		sender, err := meshcore.NewIdentityFromBytes(p[1 : 1+meshcore.PubKeySize])
+		if err != nil {
+			return
+		}
+		secret, err := n.secrets.get(sender)
+		if err != nil {
+			return
+		}
+		if _, err := meshcore.MACThenDecrypt(secret, p[1+meshcore.PubKeySize:]); err == nil {
+			pkt.MarkDoNotRetransmit()
+		}
+	}
+}
+
+// handlePeerPath learns a peer's out path from a decrypted PATH, returning false for a bad encoding.
+func (n *Node) handlePeerPath(pkt *meshcore.Packet, peer *Peer, secret, plain []byte) bool {
+	pp, err := meshcore.ParsePathPayload(plain)
+	if err != nil {
+		return false
+	}
+	n.peers.SetOutPath(peer.Identity.PublicKey(), pp.Path, pp.PathHashSize())
+	if pp.ExtraType == meshcore.PayloadTypeAck && len(pp.Extra) >= 4 {
+		n.acks.notifyCRC(binary.LittleEndian.Uint32(pp.Extra))
+	}
+	if pkt.IsRouteFlood() && !n.noReciprocalPath {
+		n.sendPathReturn(pkt, peer, secret, pp)
+	}
+	return true
+}
+
+// reciprocalPathDelay is how long a reciprocal path return waits before it is sent.
+const reciprocalPathDelay = 500 * time.Millisecond
+
+// sendPathReturn answers a flood PATH with the route it took to us, sent direct along the path it carried.
+func (n *Node) sendPathReturn(pkt *meshcore.Packet, peer *Peer, secret []byte, pp *meshcore.PathPayload) {
+	body, err := (&meshcore.PathPayload{PathLength: pkt.PathLength, Path: pkt.Path}).ToBytes()
+	if err != nil {
+		n.dispatchError(err)
+		return
+	}
+	ret, err := meshcore.NewPath(n.Identity(), peer.Identity, body, secret)
+	if err != nil {
+		n.dispatchError(err)
+		return
+	}
+	payload, err := ret.ToBytes()
+	if err != nil {
+		n.dispatchError(err)
+		return
+	}
+	out := &meshcore.Packet{Header: meshcore.MakeHeader(meshcore.RouteTypeDirect, meshcore.PayloadTypePath, 0), Payload: payload}
+	if err := n.SendDirect(out, pp.Path, pp.PathHashSize(), reciprocalPathDelay); err != nil {
+		n.dispatchError(err)
+	}
 }
 
 func (n *Node) dispatchPacket(pkt *meshcore.Packet) {

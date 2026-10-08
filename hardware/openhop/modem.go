@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/meshcore-go/meshcore-go/hardware"
+	"github.com/OwlShack/meshcore-go/hardware"
 )
 
 // Errors returned by a Modem.
@@ -1072,10 +1072,7 @@ func (m *Modem) AirtimeEstimator() func(packetLen int) uint32 {
 	})
 	// The shared estimator assumes the MeshCore firmware's own preamble, which
 	// this modem takes from its configuration instead.
-	assumed := 16.0
-	if cfg.SF <= 8 {
-		assumed = 32
-	}
+	assumed := float64(hardware.PreambleForSF(cfg.SF))
 	symbolMs := math.Exp2(float64(cfg.SF)) / float64(cfg.BandwidthHz) * 1000
 	delta := (float64(cfg.PreambleLen) - assumed) * symbolMs
 	return func(packetLen int) uint32 {

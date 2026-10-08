@@ -7,7 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/meshcore-go/meshcore-go/hardware"
+	meshcore "github.com/OwlShack/meshcore-go"
+	"github.com/OwlShack/meshcore-go/hardware"
 )
 
 const queuedRadioTickInterval = 50 * time.Millisecond
@@ -21,6 +22,9 @@ type TxStats struct {
 	BusyDropped   uint64
 	Failed        uint64
 	QueueRejected uint64
+	SentFlood     uint64 // flood packets transmitted, relays included
+	SentDirect    uint64 // direct packets transmitted, relays included
+	AirtimeMs     uint64 // estimated transmit airtime; zero without an airtime estimator
 
 	// FailedInARow counts send attempts since the last success, busy retries included.
 	FailedInARow uint64
@@ -44,6 +48,8 @@ type txEngine struct {
 	statBusyDropped   atomic.Uint64
 	statFailed        atomic.Uint64
 	statQueueRejected atomic.Uint64
+	statSentFlood     atomic.Uint64
+	statSentDirect    atomic.Uint64
 	failedInARow      atomic.Uint64
 	failingSince      atomic.Int64
 }
@@ -130,7 +136,14 @@ func (e *txEngine) stats() TxStats {
 		BusyDropped:   e.statBusyDropped.Load(),
 		Failed:        e.statFailed.Load(),
 		QueueRejected: e.statQueueRejected.Load(),
+		SentFlood:     e.statSentFlood.Load(),
+		SentDirect:    e.statSentDirect.Load(),
 	}
+	e.mu.Lock()
+	if e.budget != nil {
+		st.AirtimeMs = e.budget.totalAirtimeMs
+	}
+	e.mu.Unlock()
 	if n := e.failedInARow.Load(); n > 0 {
 		st.FailedInARow = n
 		st.FailingSince = time.Unix(0, e.failingSince.Load())
@@ -173,8 +186,7 @@ func (e *txEngine) drain() {
 		}
 
 		if e.budget != nil {
-			estAirtime := e.budget.estimator(len(entry.data))
-			ok, waitMs := e.budget.canSend(estAirtime)
+			ok, waitMs := e.budget.canSend(e.budget.estimator(meshcore.MaxTransUnit))
 			if !ok {
 				e.nextTxTime = now.Add(time.Duration(waitMs * float64(time.Millisecond)))
 				e.mu.Unlock()
@@ -224,16 +236,19 @@ func (e *txEngine) drain() {
 		}
 
 		e.statSent.Add(1)
+		if len(popped.data) > 0 {
+			if rt := popped.data[0] & meshcore.PacketRouteMask; rt == meshcore.RouteTypeFlood || rt == meshcore.RouteTypeTransportFlood {
+				e.statSentFlood.Add(1)
+			} else {
+				e.statSentDirect.Add(1)
+			}
+		}
 		e.failedInARow.Store(0)
 
 		if e.budget != nil {
-			actualMs := uint64(time.Since(sendStart).Milliseconds())
-			estAirtime := e.budget.estimator(len(popped.data))
-			if actualMs < 1 && estAirtime > 0 {
-				actualMs = uint64(estAirtime)
-			}
+			// Wall-clock SendData time includes KISS TXDELAY, CSMA and serial; firmware counts radio time only.
 			e.mu.Lock()
-			e.budget.deduct(actualMs)
+			e.budget.deduct(uint64(e.budget.estimator(len(popped.data))))
 			delay := e.budget.nextTxDelay()
 			if delay > 0 {
 				e.nextTxTime = time.Now().Add(delay)

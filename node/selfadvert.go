@@ -3,7 +3,7 @@ package node
 import (
 	"time"
 
-	meshcore "github.com/meshcore-go/meshcore-go"
+	meshcore "github.com/OwlShack/meshcore-go"
 )
 
 func (n *Node) selfAdvert() {
@@ -48,12 +48,10 @@ func (n *Node) sendAdvert() {
 	}
 
 	pkt := &meshcore.Packet{
-		Header:     meshcore.MakeHeader(meshcore.RouteTypeFlood, meshcore.PayloadTypeAdvert, 0),
-		PathLength: meshcore.PathHashSize - 1,
-		Payload:    payload,
+		Header:  meshcore.MakeHeader(meshcore.RouteTypeFlood, meshcore.PayloadTypeAdvert, 0),
+		Payload: payload,
 	}
-
-	if err := n.SendPacket(pkt); err != nil {
+	if err := n.SendFlood(pkt, n.regions.Default(), meshcore.PathHashSize, 0); err != nil {
 		n.dispatchError(err)
 	}
 }

@@ -5,7 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	meshcore "github.com/meshcore-go/meshcore-go"
+	meshcore "github.com/OwlShack/meshcore-go"
 )
 
 const maxCachedSecrets = 100

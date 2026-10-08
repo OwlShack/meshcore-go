@@ -28,11 +28,7 @@ func LoRaAirtimeEstimator(config *RadioConfig) func(packetLen int) uint32 {
 	}
 
 	const bitsPerCrc, headerBits = 16.0, 20.0
-	preamble := 16.0
-	if config.SF <= 8 {
-		preamble = 32
-	}
-	preambleSymbols := preamble + 8 + sfCoeff1
+	preambleSymbols := float64(PreambleForSF(config.SF)) + 8 + sfCoeff1
 
 	return func(packetLen int) uint32 {
 		bitCount := 8*float64(packetLen) + bitsPerCrc - 4*sf + sfCoeff2 + headerBits
@@ -42,4 +38,12 @@ func LoRaAirtimeEstimator(config *RadioConfig) func(packetLen int) uint32 {
 		symbolCount := preambleSymbols + math.Ceil(bitCount/sfDivisor)*cr
 		return uint32(math.Ceil(symbolCount * symbolTimeMs))
 	}
+}
+
+// PreambleForSF is the preamble length in symbols MeshCore firmware uses for a spreading factor.
+func PreambleForSF(sf uint8) uint16 {
+	if sf <= 8 {
+		return 32
+	}
+	return 16
 }

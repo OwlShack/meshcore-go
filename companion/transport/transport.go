@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/meshcore-go/meshcore-go/companion"
+	"github.com/OwlShack/meshcore-go/companion"
 )
 
 // ErrClosed is returned by Send after Close.
