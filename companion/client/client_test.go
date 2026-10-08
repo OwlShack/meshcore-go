@@ -1,9 +1,12 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -414,6 +417,9 @@ func TestGetWaitingMessagesV3(t *testing.T) {
 	}
 	if msgs[0].Contact.PubKeyPrefix[0] != 0xBB {
 		t.Errorf("PubKeyPrefix[0] = 0x%02x, want 0xBB", msgs[0].Contact.PubKeyPrefix[0])
+	}
+	if !msgs[0].HasSNR || msgs[0].SNR != -5 {
+		t.Errorf("SNR = %v (has %v), want -5", msgs[0].SNR, msgs[0].HasSNR)
 	}
 }
 
@@ -1605,15 +1611,15 @@ func TestSetRadioParams(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := c.SetRadioParams(ctx, 915000000, 125000, 7, 5); err != nil {
+	if err := c.SetRadioParams(ctx, 869525, 250000, 11, 5, true); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	mt.mu.Lock()
-	if mt.sent[0][0] != companion.CmdSetRadioParams {
-		t.Errorf("command code = 0x%02x, want 0x%02x", mt.sent[0][0], companion.CmdSetRadioParams)
+	defer mt.mu.Unlock()
+	if got, want := hex.EncodeToString(mt.sent[0]), "0b95440d0090d003000b0501"; got != want {
+		t.Errorf("frame = %s, want %s", got, want)
 	}
-	mt.mu.Unlock()
 }
 
 func TestSetTxPower(t *testing.T) {
@@ -1646,19 +1652,21 @@ func TestAddUpdateContact(t *testing.T) {
 	pk[0] = 0xAA
 
 	mt.onSend = func(_ []byte) {
-		go mt.fireResponse(companion.Response{Code: companion.RespOk, Data: companion.OkResponse{}})
+		go mt.fireResponse(companion.Response{Code: companion.RespErr, Data: companion.ErrResponse{ErrorCode: companion.ErrCodeTableFull, HasErrorCode: true}})
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := c.AddUpdateContact(ctx, meshcore.NewIdentity(pk), "alice"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	err := c.AddUpdateContact(ctx, meshcore.NewIdentity(pk), "alice")
+	var devErr *DeviceError
+	if !errors.As(err, &devErr) || devErr.Code != companion.ErrCodeTableFull {
+		t.Fatalf("err = %v, want table full from the lookup", err)
 	}
 
 	mt.mu.Lock()
-	if mt.sent[0][0] != companion.CmdAddUpdateContact {
-		t.Errorf("command code = 0x%02x, want 0x%02x", mt.sent[0][0], companion.CmdAddUpdateContact)
+	if len(mt.sent) != 1 || mt.sent[0][0] != companion.CmdGetContactByKey {
+		t.Errorf("sent %x, want only the lookup", mt.sent)
 	}
 	mt.mu.Unlock()
 }
@@ -1677,15 +1685,16 @@ func TestRemoveContact(t *testing.T) {
 	prefix := [6]byte{1, 2, 3, 4, 5, 6}
 	var pk [32]byte
 	copy(pk[:], prefix[:])
+	pk[31] = 0xff
 	if err := c.RemoveContact(ctx, meshcore.NewIdentity(pk)); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	mt.mu.Lock()
-	if mt.sent[0][0] != companion.CmdRemoveContact {
-		t.Errorf("command code = 0x%02x, want 0x%02x", mt.sent[0][0], companion.CmdRemoveContact)
+	defer mt.mu.Unlock()
+	if want := append([]byte{companion.CmdRemoveContact}, pk[:]...); !bytes.Equal(mt.sent[0], want) {
+		t.Errorf("frame = %x, want %x", mt.sent[0], want)
 	}
-	mt.mu.Unlock()
 }
 
 func TestShareContact(t *testing.T) {
@@ -1824,7 +1833,7 @@ func TestSendLogin(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := c.SendLogin(ctx, meshcore.NewIdentity(pk), "secret"); err != nil {
+	if _, err := c.SendLogin(ctx, meshcore.NewIdentity(pk), "secret"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1849,7 +1858,7 @@ func TestSendStatusReq(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := c.SendStatusReq(ctx, meshcore.NewIdentity(pk)); err != nil {
+	if _, err := c.SendStatusReq(ctx, meshcore.NewIdentity(pk)); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1871,7 +1880,7 @@ func TestSendTracePath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := c.SendTracePath(ctx, 10, 20, 1, []byte{0x01, 0x02}); err != nil {
+	if _, err := c.SendTracePath(ctx, 10, 20, 1, []byte{0x01, 0x02}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1896,7 +1905,7 @@ func TestSendTelemetryReq(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := c.SendTelemetryReq(ctx, meshcore.NewIdentity(pk)); err != nil {
+	if _, err := c.SendTelemetryReq(ctx, meshcore.NewIdentity(pk)); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1921,7 +1930,7 @@ func TestSendBinaryReq(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := c.SendBinaryReq(ctx, meshcore.NewIdentity(pk), []byte{0x01, 0x02, 0x03}); err != nil {
+	if _, err := c.SendBinaryReq(ctx, meshcore.NewIdentity(pk), []byte{0x01, 0x02, 0x03}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1943,15 +1952,15 @@ func TestSendRawData(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := c.SendRawData(ctx, []byte{0x10, 0x11}, []byte{0x22, 0x23}); err != nil {
+	if err := c.SendRawData(ctx, []byte{0x10, 0x11, 0x12, 0x13}, 2, []byte{0x22, 0x23, 0x24, 0x25}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	mt.mu.Lock()
-	if mt.sent[0][0] != companion.CmdSendRawData {
-		t.Errorf("command code = 0x%02x, want 0x%02x", mt.sent[0][0], companion.CmdSendRawData)
+	defer mt.mu.Unlock()
+	if got, want := hex.EncodeToString(mt.sent[0]), "19421011121322232425"; got != want {
+		t.Errorf("frame = %s, want %s", got, want)
 	}
-	mt.mu.Unlock()
 }
 
 func TestSetOtherParams(t *testing.T) {
@@ -2142,15 +2151,15 @@ func TestSendChannelData(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := c.SendChannelData(ctx, 3, []byte{0x01, 0x02}, 0x1234, []byte{0xAA, 0xBB}); err != nil {
+	if err := c.SendChannelData(ctx, 3, []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06}, 3, 0x1234, []byte{0xAA, 0xBB}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	mt.mu.Lock()
-	if mt.sent[0][0] != companion.CmdSendChannelData {
-		t.Errorf("command code = 0x%02x, want 0x%02x", mt.sent[0][0], companion.CmdSendChannelData)
+	defer mt.mu.Unlock()
+	if got, want := hex.EncodeToString(mt.sent[0]), "3e0382010203040506"+"3412aabb"; got != want {
+		t.Errorf("frame = %s, want %s", got, want)
 	}
-	mt.mu.Unlock()
 }
 
 func TestAppStartRespErr(t *testing.T) {
@@ -2334,17 +2343,18 @@ func TestGetTuningParamsRespErr(t *testing.T) {
 }
 
 func TestSendRequestsAcceptSent(t *testing.T) {
+	type sentResp = companion.SentResponse
 	var pk [32]byte
 	id := meshcore.NewIdentity(pk)
 	calls := []struct {
 		name string
-		call func(context.Context, *Client) error
+		call func(context.Context, *Client) (sentResp, error)
 	}{
-		{"login", func(ctx context.Context, c *Client) error { return c.SendLogin(ctx, id, "pw") }},
-		{"status", func(ctx context.Context, c *Client) error { return c.SendStatusReq(ctx, id) }},
-		{"telemetry", func(ctx context.Context, c *Client) error { return c.SendTelemetryReq(ctx, id) }},
-		{"binary", func(ctx context.Context, c *Client) error { return c.SendBinaryReq(ctx, id, []byte{1}) }},
-		{"trace", func(ctx context.Context, c *Client) error { return c.SendTracePath(ctx, 1, 2, 0, nil) }},
+		{"login", func(ctx context.Context, c *Client) (sentResp, error) { return c.SendLogin(ctx, id, "pw") }},
+		{"status", func(ctx context.Context, c *Client) (sentResp, error) { return c.SendStatusReq(ctx, id) }},
+		{"telemetry", func(ctx context.Context, c *Client) (sentResp, error) { return c.SendTelemetryReq(ctx, id) }},
+		{"binary", func(ctx context.Context, c *Client) (sentResp, error) { return c.SendBinaryReq(ctx, id, []byte{1}) }},
+		{"trace", func(ctx context.Context, c *Client) (sentResp, error) { return c.SendTracePath(ctx, 1, 2, 0, nil) }},
 	}
 	for _, tc := range calls {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2355,8 +2365,12 @@ func TestSendRequestsAcceptSent(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			if err := tc.call(ctx, c); err != nil {
+			sent, err := tc.call(ctx, c)
+			if err != nil {
 				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if sent.Tag != 7 || sent.EstTimeout != 3000 || !sent.IsFlood {
+				t.Errorf("%s: sent = %+v, want tag 7, timeout 3000, flood", tc.name, sent)
 			}
 		})
 	}
@@ -2470,6 +2484,251 @@ func TestOnPushUnsubscribe(t *testing.T) {
 }
 
 func TestAddUpdateContactLayout(t *testing.T) {
+	var pk [32]byte
+	pk[0] = 0xab
+	existing := companion.ContactResponse{
+		PublicKey: pk, Type: meshcore.AdvertTypeRepeater, Flags: 0x03, OutPathLen: 0x42,
+		AdvertName: "Old", LastAdvert: 0x11223344, AdvertLatitude: -36848460, AdvertLongitude: 174763332,
+	}
+	copy(existing.OutPath[:], []byte{0xa1, 0xa2, 0xb1, 0xb2})
+
+	notFound := companion.Response{Code: companion.RespErr, Data: companion.ErrResponse{ErrorCode: companion.ErrCodeNotFound, HasErrorCode: true}}
+	tests := []struct {
+		name   string
+		lookup companion.Response
+		want   string // hex of frame[33:100] and frame[132:144]: type, flags, out_path_len, out_path, last_advert, lat, lon
+	}{
+		{"new contact", notFound, "0100ff" + strings.Repeat("00", 64) + strings.Repeat("00", 12)},
+		{"existing keeps flags, path, advert and gps", companion.Response{Code: companion.RespContact, Data: existing},
+			"020342a1a2b1b2" + strings.Repeat("00", 60) + "44332211" + "b4bccdfd" + "44ad6a0a"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mt := &mockTransport{}
+			c := New(mt)
+			mt.onSend = func(cmd []byte) {
+				resp := companion.Response{Code: companion.RespOk, Data: companion.OkResponse{}}
+				if cmd[0] == companion.CmdGetContactByKey {
+					resp = tt.lookup
+				}
+				go mt.fireResponse(resp)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := c.AddUpdateContact(ctx, meshcore.NewIdentity(pk), "Bob"); err != nil {
+				t.Fatal(err)
+			}
+			mt.mu.Lock()
+			defer mt.mu.Unlock()
+			if len(mt.sent) != 2 {
+				t.Fatalf("sent %d frames, want lookup then add/update", len(mt.sent))
+			}
+			frame := mt.sent[1]
+			if len(frame) != 148 || frame[0] != companion.CmdAddUpdateContact {
+				t.Fatalf("frame = %x", frame)
+			}
+			if string(frame[100:104]) != "Bob\x00" {
+				t.Errorf("name = %q, want Bob", frame[100:132])
+			}
+			if got := hex.EncodeToString(append(frame[33:100:100], frame[132:144]...)); got != tt.want {
+				t.Errorf("fields = %s\nwant     %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGetContactsSinceLastmod(t *testing.T) {
+	mt := &mockTransport{}
+	c := New(mt)
+	mt.onSend = func(_ []byte) {
+		go func() {
+			mt.fireResponse(companion.Response{Code: companion.RespContactsStart, Data: companion.ContactsStartResponse{Count: 5, HasCount: true}})
+			mt.fireResponse(companion.Response{Code: companion.RespContact, Data: companion.ContactResponse{LastModified: 1700000100}})
+			mt.fireResponse(companion.Response{Code: companion.RespEndOfContacts, Data: companion.EndOfContactsResponse{MostRecentLastmod: 1700000100}})
+		}()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	contacts, lastmod, err := c.GetContactsSince(ctx, 1700000000, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(contacts) != 1 || lastmod != 1700000100 {
+		t.Errorf("got %d contacts, lastmod %d; want 1, 1700000100", len(contacts), lastmod)
+	}
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+	if got := hex.EncodeToString(mt.sent[0]); got != "0400f15365" {
+		t.Errorf("frame = %s, want 0400f15365", got)
+	}
+}
+
+func TestGetContactsBurstLargerThanBuffer(t *testing.T) {
+	const n = 100
+	mt := &mockTransport{}
+	c := New(mt)
+	mt.onSend = func(_ []byte) {
+		fired := make(chan struct{})
+		go func() {
+			defer close(fired)
+			mt.fireResponse(companion.Response{Code: companion.RespContactsStart, Data: companion.ContactsStartResponse{Count: n, HasCount: true}})
+			for range n {
+				mt.fireResponse(companion.Response{Code: companion.RespContact, Data: companion.ContactResponse{}})
+			}
+			mt.fireResponse(companion.Response{Code: companion.RespEndOfContacts, Data: companion.EndOfContactsResponse{}})
+		}()
+		// hold the caller back so the whole burst arrives before it starts reading
+		select {
+		case <-fired:
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	contacts, err := c.GetContacts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(contacts) != n {
+		t.Errorf("got %d contacts, want %d", len(contacts), n)
+	}
+}
+
+func TestGetSelfTelemetry(t *testing.T) {
+	mt := &mockTransport{}
+	c := New(mt)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := c.GetSelfTelemetry(ctx); err == nil {
+		t.Fatal("GetSelfTelemetry before AppStart: want error")
+	}
+
+	self, _ := hex.DecodeString("8b00" + "a1a2a3a4a5a6" + "017401a4")
+	remote, _ := hex.DecodeString("8b00" + "b1b2b3b4b5b6" + "017401a5")
+	mt.onSend = func(cmd []byte) {
+		if cmd[0] == companion.CmdAppStart {
+			go mt.fireResponse(companion.Response{Code: companion.RespSelfInfo, Data: companion.SelfInfoResponse{PublicKey: [32]byte{0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6}}})
+			return
+		}
+		go func() {
+			for _, f := range [][]byte{remote, self} {
+				resp, err := companion.ParseResponse(f)
+				if err != nil {
+					t.Error(err)
+				}
+				mt.fireResponse(resp)
+			}
+		}()
+	}
+	pushed := make(chan companion.PushTelemetryResp, 1)
+	c.OnPush(companion.PushTelemetryResponse, func(r companion.Response) { pushed <- r.Data.(companion.PushTelemetryResp) })
+
+	if _, err := c.AppStart(ctx, 3, "test"); err != nil {
+		t.Fatal(err)
+	}
+	tel, err := c.GetSelfTelemetry(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tel.PubKeyPrefix != [6]byte{0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6} || !bytes.Equal(tel.LPPData, []byte{0x01, 0x74, 0x01, 0xa4}) {
+		t.Errorf("telemetry = %+v", tel)
+	}
+	select {
+	case p := <-pushed:
+		if p.PubKeyPrefix[0] != 0xb1 {
+			t.Errorf("pushed telemetry = %+v, want the remote one", p)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("remote telemetry did not reach the push handler")
+	}
+	mt.mu.Lock()
+	if got := hex.EncodeToString(mt.sent[1]); got != "27000000" {
+		t.Errorf("frame = %s, want 27000000", got)
+	}
+	mt.onSend = func(_ []byte) {
+		go mt.fireResponse(companion.Response{Code: companion.RespOk, Data: companion.OkResponse{}})
+	}
+	mt.mu.Unlock()
+	if err := c.ImportPrivateKey(ctx, [64]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.GetSelfTelemetry(ctx); err == nil || len(mt.sent) != 3 {
+		t.Errorf("GetSelfTelemetry after ImportPrivateKey: err %v, %d frames sent; want error before sending", err, len(mt.sent))
+	}
+}
+
+func TestFramesAfterSatisfiedWaiterReachPush(t *testing.T) {
+	mt := &mockTransport{}
+	c := New(mt)
+	var mu sync.Mutex
+	var pushed int
+	c.OnPush(companion.RespCurrTime, func(companion.Response) {
+		mu.Lock()
+		pushed++
+		mu.Unlock()
+	})
+	fired := make(chan struct{})
+	mt.onSend = func(_ []byte) {
+		go func() {
+			defer close(fired)
+			for range 3 {
+				mt.fireResponse(companion.Response{Code: companion.RespCurrTime, Data: companion.CurrTimeResponse{}})
+			}
+		}()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := c.GetDeviceTime(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-fired:
+	case <-time.After(time.Second):
+		t.Fatal("delivery blocked")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if pushed != 2 {
+		t.Errorf("push handler saw %d frames, want 2", pushed)
+	}
+}
+
+func TestSendPathDataRejectsBadPath(t *testing.T) {
+	mt := &mockTransport{}
+	c := New(mt)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	for _, tc := range []struct {
+		pathLen  int
+		hashSize uint8
+	}{{3, 2}, {5, 5}, {4, 4}, {64, 1}, {66, 3}} {
+		path := make([]byte, tc.pathLen)
+		if err := c.SendRawData(ctx, path, tc.hashSize, []byte{0x55}); err == nil {
+			t.Errorf("SendRawData(%d bytes, hash size %d): want error", tc.pathLen, tc.hashSize)
+		}
+		if err := c.SendChannelData(ctx, 1, path, tc.hashSize, 0x1234, []byte{0x55}); err == nil {
+			t.Errorf("SendChannelData(%d bytes, hash size %d): want error", tc.pathLen, tc.hashSize)
+		}
+	}
+	mt.mu.Lock()
+	if len(mt.sent) != 0 {
+		t.Errorf("sent %d frames, want 0", len(mt.sent))
+	}
+	mt.onSend = func(_ []byte) {
+		go mt.fireResponse(companion.Response{Code: companion.RespOk, Data: companion.OkResponse{}})
+	}
+	mt.mu.Unlock()
+	for _, tc := range []struct {
+		pathLen  int
+		hashSize uint8
+	}{{63, 1}, {64, 2}, {63, 3}, {0, 0}} {
+		if err := c.SendRawData(ctx, make([]byte, tc.pathLen), tc.hashSize, nil); err != nil {
+			t.Errorf("SendRawData(%d bytes, hash size %d): %v", tc.pathLen, tc.hashSize, err)
+		}
+	}
+}
+
+func TestSetOtherParamsFull(t *testing.T) {
 	mt := &mockTransport{}
 	c := New(mt)
 	mt.onSend = func(_ []byte) {
@@ -2477,19 +2736,14 @@ func TestAddUpdateContactLayout(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	var pk [32]byte
-	pk[0] = 0xab
-	if err := c.AddUpdateContact(ctx, meshcore.NewIdentity(pk), "Bob"); err != nil {
+	cmd := companion.SetOtherParamsCommand{TelemetryModeBase: 2, TelemetryModeLoc: 1, TelemetryModeEnv: 2, AdvertLocPolicy: 1, MultiAcks: 1}
+	if err := c.SetOtherParamsFull(ctx, cmd); err != nil {
 		t.Fatal(err)
 	}
 	mt.mu.Lock()
-	frame := mt.sent[0]
-	mt.mu.Unlock()
-	if len(frame) != 148 {
-		t.Fatalf("frame length = %d, want 148", len(frame))
-	}
-	if frame[33] != meshcore.AdvertTypeChat || frame[35] != companion.OutPathUnknown || string(frame[100:103]) != "Bob" {
-		t.Errorf("type=%d out_path_len=0x%02x name=%q", frame[33], frame[35], frame[100:132])
+	defer mt.mu.Unlock()
+	if got := hex.EncodeToString(mt.sent[0]); got != "2600260101" {
+		t.Errorf("frame = %s, want 2600260101", got)
 	}
 }
 

@@ -125,13 +125,13 @@ func (c AddUpdateContactCommand) ToBytes() []byte {
 }
 
 type RemoveContactCommand struct {
-	PubKeyPrefix [6]byte
+	PublicKey [32]byte
 }
 
 func (c RemoveContactCommand) ToBytes() []byte {
-	buf := make([]byte, 7)
+	buf := make([]byte, 33)
 	buf[0] = CmdRemoveContact
-	copy(buf[1:7], c.PubKeyPrefix[:])
+	copy(buf[1:33], c.PublicKey[:])
 	return buf
 }
 
@@ -209,15 +209,19 @@ type SetRadioParamsCommand struct {
 	Bandwidth    uint32
 	SpreadFactor byte
 	CodingRate   byte
+	Repeat       bool // client repeat; firmware v9+ turns it off when false
 }
 
 func (c SetRadioParamsCommand) ToBytes() []byte {
-	buf := make([]byte, 11)
+	buf := make([]byte, 12)
 	buf[0] = CmdSetRadioParams
 	binary.LittleEndian.PutUint32(buf[1:5], c.Frequency)
 	binary.LittleEndian.PutUint32(buf[5:9], c.Bandwidth)
 	buf[9] = c.SpreadFactor
 	buf[10] = c.CodingRate
+	if c.Repeat {
+		buf[11] = 1
+	}
 	return buf
 }
 
@@ -310,14 +314,15 @@ func (c ImportPrivateKeyCommand) ToBytes() []byte {
 }
 
 type SendRawDataCommand struct {
-	Path    []byte
-	RawData []byte
+	Path         []byte
+	PathHashSize uint8 // bytes per hop, 1-3; 0 means 1
+	RawData      []byte
 }
 
 func (c SendRawDataCommand) ToBytes() []byte {
 	buf := make([]byte, 2+len(c.Path)+len(c.RawData))
 	buf[0] = CmdSendRawData
-	buf[1] = byte(len(c.Path))
+	buf[1] = encodePathLen(c.Path, c.PathHashSize)
 	copy(buf[2:2+len(c.Path)], c.Path)
 	copy(buf[2+len(c.Path):], c.RawData)
 	return buf
@@ -434,17 +439,32 @@ func (c SetDevicePinCommand) ToBytes() []byte {
 
 type SetOtherParamsCommand struct {
 	ManualAddContacts byte
+	HasExtended       bool // also send the fields below; without it the device keeps them
+	TelemetryModeBase byte // 0-3
+	TelemetryModeLoc  byte // 0-3
+	TelemetryModeEnv  byte // 0-3
+	AdvertLocPolicy   byte
+	MultiAcks         byte
 }
 
 func (c SetOtherParamsCommand) ToBytes() []byte {
-	return []byte{CmdSetOtherParams, c.ManualAddContacts}
+	if !c.HasExtended {
+		return []byte{CmdSetOtherParams, c.ManualAddContacts}
+	}
+	modes := c.TelemetryModeEnv&3<<4 | c.TelemetryModeLoc&3<<2 | c.TelemetryModeBase&3
+	return []byte{CmdSetOtherParams, c.ManualAddContacts, modes, c.AdvertLocPolicy, c.MultiAcks}
 }
 
+// SendTelemetryReqCommand requests telemetry from a contact, or from the companion itself when Self is set.
 type SendTelemetryReqCommand struct {
 	PublicKey [32]byte
+	Self      bool
 }
 
 func (c SendTelemetryReqCommand) ToBytes() []byte {
+	if c.Self {
+		return []byte{CmdSendTelemetryReq, 0, 0, 0}
+	}
 	buf := make([]byte, 36)
 	buf[0] = CmdSendTelemetryReq
 	copy(buf[4:36], c.PublicKey[:])
@@ -590,12 +610,13 @@ func (c SetPathHashModeCommand) ToBytes() []byte {
 
 // SendChannelDataCommand sends a group datagram.
 type SendChannelDataCommand struct {
-	ChannelIdx byte
-	Flood      bool
-	PathLen    byte
-	Path       []byte
-	DataType   uint16
-	Payload    []byte
+	ChannelIdx   byte
+	Flood        bool
+	PathLen      byte // encoded path_len; 0 derives it from Path and PathHashSize
+	Path         []byte
+	PathHashSize uint8 // bytes per hop, 1-3; 0 means 1
+	DataType     uint16
+	Payload      []byte
 }
 
 func (c SendChannelDataCommand) ToBytes() []byte {
@@ -604,7 +625,7 @@ func (c SendChannelDataCommand) ToBytes() []byte {
 	if c.Flood {
 		path, pathLen = nil, OutPathUnknown
 	} else if pathLen == 0 {
-		pathLen = byte(len(path))
+		pathLen = encodePathLen(path, c.PathHashSize)
 	}
 	buf := make([]byte, 5+len(path)+len(c.Payload))
 	buf[0] = CmdSendChannelData
@@ -680,4 +701,10 @@ func (c SendRawPacketCommand) ToBytes() []byte {
 	buf[1] = c.Priority
 	copy(buf[2:], c.Packet)
 	return buf
+}
+
+// encodePathLen builds the firmware path_len byte for path split into hashSize-byte hops.
+func encodePathLen(path []byte, hashSize uint8) byte {
+	hashSize = max(hashSize, 1)
+	return meshcore.MakePathLen(hashSize, uint8(len(path)/int(hashSize)))
 }

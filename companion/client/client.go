@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -27,6 +28,7 @@ type Client struct {
 
 	mu      sync.Mutex
 	waiter  *responseWaiter
+	self    *[6]byte
 	pushMu  sync.RWMutex
 	pushMap map[byte][]*pushEntry
 	errMu   sync.RWMutex
@@ -96,12 +98,12 @@ func (c *Client) onResponse(resp companion.Response) {
 	w := c.waiter
 	c.mu.Unlock()
 
-	if w != nil && w.accepts(resp.Code) {
+	if w != nil && w.accepts(resp) {
 		select {
 		case w.ch <- resp:
-		default:
+			return
+		case <-w.done:
 		}
-		return
 	}
 
 	c.pushMu.RLock()
@@ -115,42 +117,53 @@ func (c *Client) onResponse(resp companion.Response) {
 
 type responseWaiter struct {
 	codes map[byte]struct{}
+	match func(companion.Response) bool
 	ch    chan companion.Response
+	done  chan struct{}
 }
 
-func newWaiter(capacity int, codes ...byte) *responseWaiter {
+// newWaiter hands each accepted frame straight to the reader, so frames it never takes go to push handlers.
+func newWaiter(codes ...byte) *responseWaiter {
 	m := make(map[byte]struct{}, len(codes))
 	for _, code := range codes {
 		m[code] = struct{}{}
 	}
 	return &responseWaiter{
 		codes: m,
-		ch:    make(chan companion.Response, capacity),
+		ch:    make(chan companion.Response),
+		done:  make(chan struct{}),
 	}
 }
 
-func (w *responseWaiter) accepts(code byte) bool {
-	_, ok := w.codes[code]
-	return ok
-}
-
-func (c *Client) sendAndWait(ctx context.Context, cmd []byte, codes ...byte) (companion.Response, error) {
-	c.cmdMu.Lock()
-	defer c.cmdMu.Unlock()
-
-	w := newWaiter(1, codes...)
-
+// install makes w the active waiter; the returned func removes it and releases any blocked delivery.
+func (c *Client) install(w *responseWaiter) (remove func()) {
 	c.mu.Lock()
 	c.waiter = w
 	c.mu.Unlock()
-
-	defer func() {
+	return func() {
 		c.mu.Lock()
 		if c.waiter == w {
 			c.waiter = nil
 		}
 		c.mu.Unlock()
-	}()
+		close(w.done)
+	}
+}
+
+func (w *responseWaiter) accepts(resp companion.Response) bool {
+	_, ok := w.codes[resp.Code]
+	return ok && (w.match == nil || w.match(resp))
+}
+
+func (c *Client) sendAndWait(ctx context.Context, cmd []byte, codes ...byte) (companion.Response, error) {
+	return c.sendAndWaitFor(ctx, cmd, newWaiter(codes...))
+}
+
+func (c *Client) sendAndWaitFor(ctx context.Context, cmd []byte, w *responseWaiter) (companion.Response, error) {
+	c.cmdMu.Lock()
+	defer c.cmdMu.Unlock()
+
+	defer c.install(w)()
 
 	if err := c.transport.Send(cmd); err != nil {
 		return companion.Response{}, fmt.Errorf("send: %w", err)
@@ -176,19 +189,8 @@ func (c *Client) sendAndCollect(ctx context.Context, cmd []byte, terminators []b
 	allCodes = append(allCodes, terminators...)
 	allCodes = append(allCodes, companion.RespErr)
 
-	w := newWaiter(32, allCodes...)
-
-	c.mu.Lock()
-	c.waiter = w
-	c.mu.Unlock()
-
-	defer func() {
-		c.mu.Lock()
-		if c.waiter == w {
-			c.waiter = nil
-		}
-		c.mu.Unlock()
-	}()
+	w := newWaiter(allCodes...)
+	defer c.install(w)()
 
 	if err := c.transport.Send(cmd); err != nil {
 		return nil, fmt.Errorf("send: %w", err)
@@ -207,7 +209,7 @@ func (c *Client) sendAndCollect(ctx context.Context, cmd []byte, terminators []b
 				return collected, toError(resp)
 			}
 			if _, isTerm := termSet[resp.Code]; isTerm {
-				return collected, nil
+				return append(collected, resp), nil
 			}
 			collected = append(collected, resp)
 		case <-ctx.Done():
@@ -241,7 +243,14 @@ func (c *Client) AppStart(ctx context.Context, appVersion byte, appName string) 
 	if err != nil {
 		return companion.SelfInfoResponse{}, err
 	}
-	return as[companion.SelfInfoResponse](resp)
+	info, err := as[companion.SelfInfoResponse](resp)
+	if err == nil {
+		prefix := [6]byte(info.PublicKey[:6])
+		c.mu.Lock()
+		c.self = &prefix
+		c.mu.Unlock()
+	}
+	return info, err
 }
 
 // SetDeviceTime sets the device clock and waits for Ok.
@@ -281,11 +290,12 @@ func (c *Client) SendSelfAdvert(ctx context.Context, flood byte) error {
 
 // GetContacts retrieves all contacts from the device.
 func (c *Client) GetContacts(ctx context.Context) ([]companion.ContactResponse, error) {
-	return c.GetContactsSince(ctx, 0, false)
+	contacts, _, err := c.GetContactsSince(ctx, 0, false)
+	return contacts, err
 }
 
-// GetContactsSince retrieves contacts modified since the given timestamp.
-func (c *Client) GetContactsSince(ctx context.Context, since uint32, hasSince bool) ([]companion.ContactResponse, error) {
+// GetContactsSince retrieves contacts modified after since, plus the newest lastmod to pass as the next since.
+func (c *Client) GetContactsSince(ctx context.Context, since uint32, hasSince bool) ([]companion.ContactResponse, uint32, error) {
 	cmd := companion.GetContactsCommand{Since: since, HasSince: hasSince}
 
 	resps, err := c.sendAndCollect(ctx,
@@ -294,16 +304,20 @@ func (c *Client) GetContactsSince(ctx context.Context, since uint32, hasSince bo
 		companion.RespContactsStart, companion.RespContact,
 	)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	var contacts []companion.ContactResponse
+	var lastmod uint32
 	for _, r := range resps {
-		if r.Code == companion.RespContact {
-			contacts = append(contacts, r.Data.(companion.ContactResponse))
+		switch d := r.Data.(type) {
+		case companion.ContactResponse:
+			contacts = append(contacts, d)
+		case companion.EndOfContactsResponse:
+			lastmod = d.MostRecentLastmod
 		}
 	}
-	return contacts, nil
+	return contacts, lastmod, nil
 }
 
 // WaitingMessage represents a message retrieved from the device's queue.
@@ -312,6 +326,8 @@ type WaitingMessage struct {
 	Contact     *companion.ContactMsgRecvResponse
 	Channel     *companion.ChannelMsgRecvResponse
 	ChannelData *companion.ChannelDataRecvResponse
+	SNR         float32 // dB; set only when HasSNR
+	HasSNR      bool
 }
 
 // GetWaitingMessages drains all waiting messages from the device.
@@ -329,19 +345,8 @@ func (c *Client) GetWaitingMessages(ctx context.Context) ([]WaitingMessage, erro
 		companion.RespErr,
 	}
 
-	w := newWaiter(32, msgCodes...)
-
-	c.mu.Lock()
-	c.waiter = w
-	c.mu.Unlock()
-
-	defer func() {
-		c.mu.Lock()
-		if c.waiter == w {
-			c.waiter = nil
-		}
-		c.mu.Unlock()
-	}()
+	w := newWaiter(msgCodes...)
+	defer c.install(w)()
 
 	if err := c.transport.Send(companion.SyncNextMessageCommand{}.ToBytes()); err != nil {
 		return nil, fmt.Errorf("send: %w", err)
@@ -378,7 +383,7 @@ func (c *Client) GetWaitingMessages(ctx context.Context) ([]WaitingMessage, erro
 					SenderPrefix:    v3.SenderPrefix,
 					Text:            v3.Text,
 				}
-				messages = append(messages, WaitingMessage{Contact: &normalized})
+				messages = append(messages, WaitingMessage{Contact: &normalized, SNR: v3.SNR, HasSNR: true})
 
 			case companion.RespChannelMsgRecv:
 				msg, err := as[companion.ChannelMsgRecvResponse](resp)
@@ -400,14 +405,14 @@ func (c *Client) GetWaitingMessages(ctx context.Context) ([]WaitingMessage, erro
 					SenderPrefix:    v3.SenderPrefix,
 					Text:            v3.Text,
 				}
-				messages = append(messages, WaitingMessage{IsChannel: true, Channel: &normalized})
+				messages = append(messages, WaitingMessage{IsChannel: true, Channel: &normalized, SNR: v3.SNR, HasSNR: true})
 
 			case companion.RespChannelDataRecv:
 				data, err := as[companion.ChannelDataRecvResponse](resp)
 				if err != nil {
 					return messages, err
 				}
-				messages = append(messages, WaitingMessage{IsChannel: true, ChannelData: &data})
+				messages = append(messages, WaitingMessage{IsChannel: true, ChannelData: &data, SNR: data.SNR, HasSNR: true})
 			}
 
 			if err := c.transport.Send(companion.SyncNextMessageCommand{}.ToBytes()); err != nil {
@@ -481,13 +486,14 @@ func (c *Client) SetAdvertLatLon(ctx context.Context, lat, lon int32) error {
 	return err
 }
 
-// SetRadioParams configures the radio parameters and waits for Ok.
-func (c *Client) SetRadioParams(ctx context.Context, freq, bw uint32, sf, cr byte) error {
+// SetRadioParams configures the radio parameters and client repeat, and waits for Ok.
+func (c *Client) SetRadioParams(ctx context.Context, freq, bw uint32, sf, cr byte, repeat bool) error {
 	cmd := companion.SetRadioParamsCommand{
 		Frequency:    freq,
 		Bandwidth:    bw,
 		SpreadFactor: sf,
 		CodingRate:   cr,
+		Repeat:       repeat,
 	}
 	_, err := c.sendAndWait(ctx, cmd.ToBytes(), companion.RespOk, companion.RespErr)
 	return err
@@ -502,15 +508,33 @@ func (c *Client) SetTxPower(ctx context.Context, power byte) error {
 	return err
 }
 
-// AddUpdateContact adds or updates a contact and waits for Ok.
+// AddUpdateContact adds a chat contact, or renames an existing one keeping its other fields, and waits for Ok.
 func (c *Client) AddUpdateContact(ctx context.Context, peer meshcore.Identity, name string) error {
-	return c.AddUpdateContactFull(ctx, companion.AddUpdateContactCommand{
-		PublicKey:    peer.PublicKey(),
-		Type:         meshcore.AdvertTypeChat,
-		OutPathLen:   companion.OutPathUnknown,
-		Name:         name,
-		LastModified: uint32(time.Now().Unix()),
-	})
+	cmd := companion.AddUpdateContactCommand{
+		PublicKey:  peer.PublicKey(),
+		Type:       meshcore.AdvertTypeChat,
+		OutPathLen: companion.OutPathUnknown,
+	}
+	existing, err := c.GetContactByKey(ctx, peer)
+	var devErr *DeviceError
+	switch {
+	case err == nil:
+		cmd = companion.AddUpdateContactCommand{
+			PublicKey:  existing.PublicKey,
+			Type:       existing.Type,
+			Flags:      existing.Flags,
+			OutPathLen: existing.OutPathLen,
+			OutPath:    existing.OutPath[:],
+			LastAdvert: existing.LastAdvert,
+			Latitude:   existing.AdvertLatitude,
+			Longitude:  existing.AdvertLongitude,
+		}
+	case !errors.As(err, &devErr) || devErr.Code != companion.ErrCodeNotFound:
+		return err
+	}
+	cmd.Name = name
+	cmd.LastModified = uint32(time.Now().Unix())
+	return c.AddUpdateContactFull(ctx, cmd)
 }
 
 // AddUpdateContactFull adds or updates a contact with every field the firmware stores.
@@ -519,9 +543,9 @@ func (c *Client) AddUpdateContactFull(ctx context.Context, cmd companion.AddUpda
 	return err
 }
 
-// RemoveContact removes a contact by public key prefix and waits for Ok.
+// RemoveContact removes a contact and waits for Ok.
 func (c *Client) RemoveContact(ctx context.Context, peer meshcore.Identity) error {
-	cmd := companion.RemoveContactCommand{PubKeyPrefix: peer.Prefix()}
+	cmd := companion.RemoveContactCommand{PublicKey: peer.PublicKey()}
 	_, err := c.sendAndWait(ctx, cmd.ToBytes(), companion.RespOk, companion.RespErr)
 	return err
 }
@@ -590,22 +614,30 @@ func (c *Client) ExportPrivateKey(ctx context.Context) (companion.PrivateKeyResp
 func (c *Client) ImportPrivateKey(ctx context.Context, key [64]byte) error {
 	cmd := companion.ImportPrivateKeyCommand{PrivateKey: key}
 	_, err := c.sendAndWait(ctx, cmd.ToBytes(), companion.RespOk, companion.RespErr)
+	if err == nil {
+		c.mu.Lock()
+		c.self = nil
+		c.mu.Unlock()
+	}
 	return err
 }
 
-func (c *Client) sendExpectSent(ctx context.Context, cmd []byte) error {
-	_, err := c.sendAndWait(ctx, cmd, companion.RespSent, companion.RespOk, companion.RespErr)
-	return err
+func (c *Client) sendExpectSent(ctx context.Context, cmd []byte) (companion.SentResponse, error) {
+	resp, err := c.sendAndWait(ctx, cmd, companion.RespSent, companion.RespOk, companion.RespErr)
+	if err != nil || resp.Code != companion.RespSent {
+		return companion.SentResponse{}, err
+	}
+	return as[companion.SentResponse](resp)
 }
 
 // SendLogin sends a login request to a remote node.
-func (c *Client) SendLogin(ctx context.Context, peer meshcore.Identity, password string) error {
+func (c *Client) SendLogin(ctx context.Context, peer meshcore.Identity, password string) (companion.SentResponse, error) {
 	cmd := companion.SendLoginCommand{PublicKey: peer.PublicKey(), Password: password}
 	return c.sendExpectSent(ctx, cmd.ToBytes())
 }
 
 // SendStatusReq sends a status request to a remote node.
-func (c *Client) SendStatusReq(ctx context.Context, peer meshcore.Identity) error {
+func (c *Client) SendStatusReq(ctx context.Context, peer meshcore.Identity) (companion.SentResponse, error) {
 	cmd := companion.SendStatusReqCommand{PublicKey: peer.PublicKey()}
 	return c.sendExpectSent(ctx, cmd.ToBytes())
 }
@@ -635,15 +667,35 @@ func (c *Client) GetContactByKey(ctx context.Context, peer meshcore.Identity) (c
 }
 
 // SendTracePath sends a trace path request.
-func (c *Client) SendTracePath(ctx context.Context, tag, auth uint32, flags byte, path []byte) error {
+func (c *Client) SendTracePath(ctx context.Context, tag, auth uint32, flags byte, path []byte) (companion.SentResponse, error) {
 	cmd := companion.SendTracePathCommand{Tag: tag, Auth: auth, Flags: flags, Path: path}
 	return c.sendExpectSent(ctx, cmd.ToBytes())
 }
 
 // SendTelemetryReq sends a telemetry request to a remote node.
-func (c *Client) SendTelemetryReq(ctx context.Context, peer meshcore.Identity) error {
+func (c *Client) SendTelemetryReq(ctx context.Context, peer meshcore.Identity) (companion.SentResponse, error) {
 	cmd := companion.SendTelemetryReqCommand{PublicKey: peer.PublicKey()}
 	return c.sendExpectSent(ctx, cmd.ToBytes())
+}
+
+// GetSelfTelemetry returns the companion's own telemetry as Cayenne LPP; it needs AppStart first to know the companion's key.
+func (c *Client) GetSelfTelemetry(ctx context.Context) (companion.PushTelemetryResp, error) {
+	c.mu.Lock()
+	self := c.self
+	c.mu.Unlock()
+	if self == nil {
+		return companion.PushTelemetryResp{}, errors.New("companion: self telemetry needs AppStart first")
+	}
+	w := newWaiter(companion.PushTelemetryResponse, companion.RespErr)
+	w.match = func(r companion.Response) bool {
+		t, ok := r.Data.(companion.PushTelemetryResp)
+		return r.Code == companion.RespErr || ok && t.PubKeyPrefix == *self
+	}
+	resp, err := c.sendAndWaitFor(ctx, companion.SendTelemetryReqCommand{Self: true}.ToBytes(), w)
+	if err != nil {
+		return companion.PushTelemetryResp{}, err
+	}
+	return as[companion.PushTelemetryResp](resp)
 }
 
 // GetCustomVars retrieves custom variables from the device.
@@ -676,7 +728,7 @@ func (c *Client) GetAdvertPath(ctx context.Context, peer meshcore.Identity) (com
 }
 
 // SendBinaryReq sends a binary request to a remote node.
-func (c *Client) SendBinaryReq(ctx context.Context, peer meshcore.Identity, data []byte) error {
+func (c *Client) SendBinaryReq(ctx context.Context, peer meshcore.Identity, data []byte) (companion.SentResponse, error) {
 	cmd := companion.SendBinaryReqCommand{PublicKey: peer.PublicKey(), RequestData: data}
 	return c.sendExpectSent(ctx, cmd.ToBytes())
 }
@@ -696,9 +748,12 @@ func (c *Client) SendPathDiscoveryReq(ctx context.Context, peer meshcore.Identit
 	return as[companion.SentResponse](resp)
 }
 
-// SendRawData sends raw data over a path and waits for Ok.
-func (c *Client) SendRawData(ctx context.Context, path, data []byte) error {
-	cmd := companion.SendRawDataCommand{Path: path, RawData: data}
+// SendRawData sends raw data over a path of hashSize-byte hops and waits for Ok.
+func (c *Client) SendRawData(ctx context.Context, path []byte, hashSize uint8, data []byte) error {
+	if err := checkPath(path, hashSize); err != nil {
+		return err
+	}
+	cmd := companion.SendRawDataCommand{Path: path, PathHashSize: hashSize, RawData: data}
 	_, err := c.sendAndWait(ctx, cmd.ToBytes(), companion.RespOk, companion.RespErr)
 	return err
 }
@@ -782,6 +837,13 @@ func (c *Client) SetOtherParams(ctx context.Context, manualAddContacts byte) err
 	return err
 }
 
+// SetOtherParamsFull sets manual-add, telemetry modes, advert location policy and multi-ACKs, and waits for Ok.
+func (c *Client) SetOtherParamsFull(ctx context.Context, cmd companion.SetOtherParamsCommand) error {
+	cmd.HasExtended = true
+	_, err := c.sendAndWait(ctx, cmd.ToBytes(), companion.RespOk, companion.RespErr)
+	return err
+}
+
 // SetFloodScope sets the flood scope transport key and waits for Ok.
 func (c *Client) SetFloodScope(ctx context.Context, transportKey []byte) error {
 	cmd := companion.SetFloodScopeCommand{TransportKey: transportKey}
@@ -796,13 +858,17 @@ func (c *Client) SetFloodScopeUnscoped(ctx context.Context) error {
 	return err
 }
 
-// SendChannelData sends binary data to a channel and waits for Ok.
-func (c *Client) SendChannelData(ctx context.Context, channelIdx byte, path []byte, dataType uint16, payload []byte) error {
+// SendChannelData sends binary data to a channel over a path of hashSize-byte hops and waits for Ok.
+func (c *Client) SendChannelData(ctx context.Context, channelIdx byte, path []byte, hashSize uint8, dataType uint16, payload []byte) error {
+	if err := checkPath(path, hashSize); err != nil {
+		return err
+	}
 	cmd := companion.SendChannelDataCommand{
-		ChannelIdx: channelIdx,
-		Path:       path,
-		DataType:   dataType,
-		Payload:    payload,
+		ChannelIdx:   channelIdx,
+		Path:         path,
+		PathHashSize: hashSize,
+		DataType:     dataType,
+		Payload:      payload,
 	}
 	_, err := c.sendAndWait(ctx, cmd.ToBytes(), companion.RespOk, companion.RespErr)
 	return err
@@ -973,4 +1039,14 @@ func as[T any](resp companion.Response) (T, error) {
 		return zero, fmt.Errorf("companion: response 0x%02x carried %T, want %T", resp.Code, resp.Data, zero)
 	}
 	return v, nil
+}
+
+// checkPath rejects a path that is not at most 63 whole hops of hashSize bytes (0 means 1) within the path limit.
+func checkPath(path []byte, hashSize uint8) error {
+	hs := int(max(hashSize, 1))
+	n := len(path) / hs
+	if hs > 3 || len(path)%hs != 0 || n > 63 || !meshcore.IsValidPathLen(meshcore.MakePathLen(uint8(hs), uint8(n))) {
+		return fmt.Errorf("companion: invalid path of %d bytes for hash size %d", len(path), hashSize)
+	}
+	return nil
 }

@@ -3,6 +3,7 @@ package companion
 import (
 	"encoding/binary"
 	"fmt"
+	"strings"
 
 	meshcore "github.com/OwlShack/meshcore-go"
 )
@@ -62,7 +63,11 @@ type SelfInfoResponse struct {
 	PublicKey         [32]byte
 	AdvertLatitude    int32
 	AdvertLongitude   int32
-	Reserved          [3]byte
+	MultiAcks         byte
+	AdvertLocPolicy   byte
+	TelemetryModeBase byte
+	TelemetryModeLoc  byte
+	TelemetryModeEnv  byte
 	ManualAddContacts byte
 	RadioFrequency    uint32
 	RadioBandwidth    uint32
@@ -104,7 +109,18 @@ type SentResponse struct {
 }
 
 type CustomVarsResponse struct {
-	Vars string
+	Vars string // "name:value" pairs joined by ','
+}
+
+// Map splits Vars into name/value pairs.
+func (r CustomVarsResponse) Map() map[string]string {
+	m := make(map[string]string)
+	for pair := range strings.SplitSeq(r.Vars, ",") {
+		if name, value, ok := strings.Cut(pair, ":"); ok {
+			m[name] = value
+		}
+	}
+	return m
 }
 
 type AdvertPathResponse struct {
@@ -531,7 +547,10 @@ func ParseSelfInfoResponse(data []byte) (SelfInfoResponse, error) {
 	idx += 4
 	resp.AdvertLongitude = int32(binary.LittleEndian.Uint32(data[idx : idx+4]))
 	idx += 4
-	copy(resp.Reserved[:], data[idx:idx+3])
+	resp.MultiAcks = data[idx]
+	resp.AdvertLocPolicy = data[idx+1]
+	modes := data[idx+2]
+	resp.TelemetryModeBase, resp.TelemetryModeLoc, resp.TelemetryModeEnv = modes&3, modes>>2&3, modes>>4&3
 	idx += 3
 	resp.ManualAddContacts = data[idx]
 	idx++
