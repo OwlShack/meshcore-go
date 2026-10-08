@@ -180,7 +180,10 @@ with firmware priorities. The module is now `github.com/OwlShack/meshcore-go`; s
 - **The module is now `github.com/OwlShack/meshcore-go`, starting with this release.** Go does not
   follow GitHub's redirect for module paths, so replace `github.com/meshcore-go/meshcore-go` in
   your imports and `go.mod`, including the `companion/transport` and `hardware/*` modules. v1.6.0
-  and earlier only resolve under the old path.
+  and earlier only resolve under the old path, so `go get` fails while `go.mod` names v1.6.0 under
+  the new one. Set the version as you change the path: run
+  `go mod edit -require=github.com/OwlShack/meshcore-go@v1.7.0`, and the same for each nested module
+  you use, then `go mod tidy`.
 - **`Seed()` and the sx12xx `NoiseFloor()` return a second value.** Callers need
   `seed, ok := id.Seed()` and should treat `!ok` as an identity that cannot be saved by its seed;
   save the original `prv.key` bytes instead. For the noise floor, use `floor, ok := m.NoiseFloor()`
