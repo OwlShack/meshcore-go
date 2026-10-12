@@ -397,7 +397,7 @@ func (n *Node) estAirtime(packetLen int) uint32 {
 	return ms
 }
 
-// UniqueTimestamp returns a Unix-second timestamp later than any it returned before, for DMs, requests and logins.
+// UniqueTimestamp returns a timestamp later than any before; concurrent senders must enqueue in stamp order, as firmware drops an older request.
 func (n *Node) UniqueTimestamp() uint32 { return n.clock.Next() }
 
 func (n *Node) Identity() meshcore.LocalIdentity {
