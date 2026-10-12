@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	meshcore "github.com/OwlShack/meshcore-go"
@@ -77,6 +78,7 @@ type Node struct {
 	advertHashSize uint8
 
 	noReciprocalPath bool
+	noAirtimeWarned  atomic.Bool
 
 	clock UniqueClock
 
@@ -216,7 +218,7 @@ func WithDefaultRegion(name string) Option {
 	}
 }
 
-// WithAirtimeEstimator supplies node timing; a RadioMux needs its own estimator for TX budgeting.
+// WithAirtimeEstimator overrides the radio's own EstAirtime for relay and receive timing.
 func WithAirtimeEstimator(est AirtimeEstimator) Option {
 	return func(c *nodeConfig) {
 		c.tx.airtimeEstimator = est
@@ -295,6 +297,9 @@ func New(identity meshcore.LocalIdentity, radio Radio, opts ...Option) *Node {
 	}
 	if cfg.log == nil {
 		cfg.log = slog.Default()
+	}
+	if src, ok := radio.(AirtimeSource); ok && cfg.tx.airtimeEstimator == nil {
+		cfg.tx.airtimeEstimator = src.EstAirtime
 	}
 	if cfg.floodDelay == nil {
 		cfg.floodDelay = func(_ int, estAirtimeMs uint32) time.Duration { return FloodRetransmitDelay(estAirtimeMs) }
@@ -382,10 +387,14 @@ func New(identity meshcore.LocalIdentity, radio Radio, opts ...Option) *Node {
 }
 
 func (n *Node) estAirtime(packetLen int) uint32 {
-	if n.txCfg.airtimeEstimator == nil {
-		return 0
+	var ms uint32
+	if n.txCfg.airtimeEstimator != nil {
+		ms = n.txCfg.airtimeEstimator(packetLen)
 	}
-	return n.txCfg.airtimeEstimator(packetLen)
+	if ms == 0 && n.noAirtimeWarned.CompareAndSwap(false, true) {
+		n.log.Warn("node: radio gives no airtime estimate, so relay and receive delays are 0; set its radio config or pass WithAirtimeEstimator")
+	}
+	return ms
 }
 
 // UniqueTimestamp returns a Unix-second timestamp later than any it returned before, for DMs, requests and logins.

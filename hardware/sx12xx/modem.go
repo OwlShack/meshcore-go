@@ -6,7 +6,7 @@
 //	modem, err := sx12xx.NewModem(radio, &hardware.RadioConfig{
 //		FreqHz: 869_525_000, BwHz: 250_000, SF: 11, CR: 5,
 //	})
-//	mux := node.NewRadioMux(modem, node.WithMuxAirtimeEstimator(modem.AirtimeEstimator()))
+//	mux := node.NewRadioMux(modem)
 package sx12xx
 
 import (
@@ -345,8 +345,13 @@ func codingRate(cr uint8) CodingRate {
 	return CodingRate(cr)
 }
 
-// AirtimeEstimator returns the time-on-air estimator for the configured
-// modulation, for node.WithMuxAirtimeEstimator.
+// EstAirtime returns the time on air in milliseconds for a packet under the
+// configured modulation; node.RadioMux reads it itself.
+func (m *Modem) EstAirtime(packetLen int) uint32 { return m.airtime(packetLen) }
+
+// AirtimeEstimator returns the time-on-air estimator for the configured modulation.
+//
+// Deprecated: node.RadioMux and node.Node read EstAirtime from the modem themselves.
 func (m *Modem) AirtimeEstimator() func(packetLen int) uint32 { return m.airtime }
 
 // PacketScore rates a received packet from 0 (no chance of success) to 1, using
