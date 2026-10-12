@@ -53,7 +53,7 @@ func BuildLoginRequest(r LoginRequest, room bool) ([]byte, error) {
 	return append(b, r.Password...), nil
 }
 
-// ParseLoginRequest decodes a login body; set room when you are a room server.
+// ParseLoginRequest decodes a login body; set room when you are a room server, which reads every anon request as a login.
 func ParseLoginRequest(data []byte, room bool) (LoginRequest, error) {
 	var r LoginRequest
 	if room {
@@ -62,6 +62,8 @@ func ParseLoginRequest(data []byte, room bool) (LoginRequest, error) {
 		}
 		r.SyncSince = binary.LittleEndian.Uint32(data[:4])
 		data = data[4:]
+	} else if len(data) > 0 && data[0] != 0 && data[0] < ' ' {
+		return r, fmt.Errorf("meshcore: login starting 0x%02x is an anon request", data[0])
 	}
 	r.Password = string(cString(data))
 	return r, nil
@@ -341,6 +343,11 @@ func ParseAnonOwnerReply(data []byte) (AnonOwnerReply, error) {
 	return r, nil
 }
 
+// BuildAnonOwnerReply encodes an OWNER reply body.
+func BuildAnonOwnerReply(r AnonOwnerReply) []byte {
+	return append(binary.LittleEndian.AppendUint32(nil, r.Clock), r.Name+"\n"+r.Owner...)
+}
+
 // AnonBasicReply is a server's answer to an anon BASIC request.
 type AnonBasicReply struct {
 	Clock    uint32 // the server's clock, in Unix seconds
@@ -353,6 +360,11 @@ func ParseAnonBasicReply(data []byte) (AnonBasicReply, error) {
 		return AnonBasicReply{}, fmt.Errorf("%w: basic reply needs 5 bytes, have %d", ErrTooShort, len(data))
 	}
 	return AnonBasicReply{Clock: binary.LittleEndian.Uint32(data[:4]), Features: data[4]}, nil
+}
+
+// BuildAnonBasicReply encodes a BASIC reply body.
+func BuildAnonBasicReply(r AnonBasicReply) []byte {
+	return append(binary.LittleEndian.AppendUint32(nil, r.Clock), r.Features)
 }
 
 // lppDataInfo returns a type's size, multiplier and signedness under MeshCore's LPPData rules, which differ from LPPDecode's.

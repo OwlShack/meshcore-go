@@ -810,3 +810,25 @@ func TestIsValidAdvertName(t *testing.T) {
 		}
 	}
 }
+
+func TestNewAdvert(t *testing.T) {
+	var seed [ed25519.SeedSize]byte
+	seed[0] = 9
+	id := NewLocalIdentityFromSeed(seed)
+	data := AdvertAppData{Type: "REPEATER", Name: "rpt", Lat: -41290000, Lon: 174780000}
+	adv, err := NewAdvert(id, data, 1234)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, _ := data.ToBytes()
+	want := &Advert{PublicKey: id.Identity, Timestamp: 1234, RawAppData: app}
+	want.SignWith(id)
+	got, _ := adv.ToBytes()
+	wantBytes, _ := want.ToBytes()
+	if !bytes.Equal(got, wantBytes) || !adv.Verify() {
+		t.Fatalf("advert %x\nwant   %x", got, wantBytes)
+	}
+	if _, err := NewAdvert(id, AdvertAppData{RawType: 0x10}, 1); err == nil {
+		t.Fatal("bad app data accepted")
+	}
+}

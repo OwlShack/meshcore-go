@@ -466,8 +466,8 @@ func TestMux_TxQueueLen(t *testing.T) {
 	radio.Enqueue([]byte{0x01}, 0, time.Hour)
 	radio.Enqueue([]byte{0x02}, 0, time.Hour)
 
-	if radio.TxQueueLen() != 2 {
-		t.Errorf("TxQueueLen = %d, want 2", radio.TxQueueLen())
+	if radio.TxQueueLen() != 2 || mux.TxQueueLen() != 2 {
+		t.Errorf("TxQueueLen = %d radio, %d mux, want 2", radio.TxQueueLen(), mux.TxQueueLen())
 	}
 }
 

@@ -56,7 +56,7 @@ func (v *virtualRadio) Enqueue(data []byte, priority uint8, delay time.Duration)
 }
 
 func (v *virtualRadio) TxQueueLen() int {
-	return v.mux.txQueueLen()
+	return v.mux.TxQueueLen()
 }
 
 func (v *virtualRadio) AddOutboundHandler(h func([]byte)) {
@@ -213,7 +213,8 @@ func (m *RadioMux) enqueue(data []byte, priority uint8, delay time.Duration) boo
 	return m.tx.enqueue(data, priority, delay)
 }
 
-func (m *RadioMux) txQueueLen() int {
+// TxQueueLen returns how many packets wait to transmit, the firmware's getOutboundTotal.
+func (m *RadioMux) TxQueueLen() int {
 	return m.tx.queueLen()
 }
 

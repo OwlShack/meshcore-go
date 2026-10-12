@@ -47,6 +47,11 @@ func FuzzBodyParsers(f *testing.F) {
 		ParseAnonRegionsReply(data)
 		ParseAnonOwnerReply(data)
 		ParseAnonBasicReply(data)
+		ParseAnonRequest(data)
+		if c, err := ControlFromBytes(data); err == nil {
+			c.DiscoverRequest()
+			c.DiscoverResponse()
+		}
 		ParseGroupDataPayload(data)
 		if p, err := ParsePathPayload(data); err == nil {
 			p.ToBytes()
