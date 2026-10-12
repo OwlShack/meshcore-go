@@ -16,8 +16,24 @@ code. `scripts/prepare-release.sh` renames the section for the release.
 
 ### Added
 
+- **Servers can answer anonymous requests.** `ParseAnonRequest` reads a REGIONS, OWNER or BASIC
+  request, and `BuildAnonRegionsReply`, `BuildAnonOwnerReply` and `BuildAnonBasicReply` encode the
+  replies. The regions reply drops a leading `#` and skips names that do not fit. Names stop at 152
+  bytes, the most a firmware companion can pass on to the app; firmware itself sends up to 159.
+- **Discover builders.** `NewDiscoverRequest` and `NewDiscoverResponse` build the control payloads
+  that `DiscoverRequest` and `DiscoverResponse` parse; a response to a prefix-only request carries
+  the first 8 bytes of the key.
+- **`NewAdvert` builds a signed advert** from an identity, app data and timestamp.
+- **`node.UniqueClock` and `Node.UniqueTimestamp`** hand out timestamps that always increase, the
+  firmware's `getCurrentTimeUnique`, so two requests in the same second are not taken as replays.
+- **`RadioMux.TxQueueLen`** reports how many packets wait to transmit without opening a radio.
 - **`node.WithAdvertPathHashSize` sets the hash size for periodic self-adverts.** Firmware floods
   its self-advert with `path_hash_mode + 1` bytes per hop; until now a node always used 1.
+
+### Changed
+
+- **`ParseLoginRequest` refuses an anonymous request.** A body starting with a control byte is a
+  REGIONS, OWNER or BASIC request, not a password; room servers still read every body as a login.
 
 ### Fixed
 
