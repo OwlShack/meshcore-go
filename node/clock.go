@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// UniqueClock hands out Unix-second timestamps that always increase, the firmware's getCurrentTimeUnique.
+// UniqueClock hands out Unix-second timestamps that always increase, the firmware's getCurrentTimeUnique; it orders stamps, not sends.
 type UniqueClock struct {
 	Now  func() time.Time // nil means time.Now
 	last atomic.Uint32

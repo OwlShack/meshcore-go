@@ -26,6 +26,8 @@ code. `scripts/prepare-release.sh` renames the section for the release.
 - **`NewAdvert` builds a signed advert** from an identity, app data and timestamp.
 - **`node.UniqueClock` and `Node.UniqueTimestamp`** hand out timestamps that always increase, the
   firmware's `getCurrentTimeUnique`, so two requests in the same second are not taken as replays.
+  They order the stamps only: concurrent senders must enqueue in stamp order, since firmware drops a
+  request older than the last one it took.
 - **`RadioMux.TxQueueLen`** reports how many packets wait to transmit without opening a radio.
 - **`node.WithAdvertPathHashSize` sets the hash size for periodic self-adverts.** Firmware floods
   its self-advert with `path_hash_mode + 1` bytes per hop; until now a node always used 1.
