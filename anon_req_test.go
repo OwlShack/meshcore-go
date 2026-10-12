@@ -400,3 +400,32 @@ func TestNewAnonReq(t *testing.T) {
 		t.Fatalf("Decrypt = %x, want prefix %x", got, plain)
 	}
 }
+
+func TestBuildAnonRegionsReply(t *testing.T) {
+	r := AnonRegionsReply{Clock: 0x40302010, Regions: []string{"*", "#nz", "akl"}}
+	got := BuildAnonRegionsReply(r)
+	if want := append(mustHex(t, "10203040"), "*,nz,akl"...); !bytes.Equal(got, want) {
+		t.Fatalf("built %q, want %q", got, want)
+	}
+	back, err := ParseAnonRegionsReply(got)
+	if err != nil || strings.Join(back.Regions, ",") != "*,nz,akl" {
+		t.Fatalf("round trip %+v, %v", back, err)
+	}
+	if got := BuildAnonRegionsReply(AnonRegionsReply{}); len(got) != 4 {
+		t.Fatalf("empty reply %x", got)
+	}
+
+	// A firmware companion forwards at most 160 padded bytes, leaving 152 for names after the tag and clock.
+	long := strings.Repeat("a", 150)
+	got = BuildAnonRegionsReply(AnonRegionsReply{Regions: []string{"*", long + "a", "b"}})
+	if names := string(got[4:]); names != "*,b" {
+		t.Fatalf("names %q", names)
+	}
+	got = BuildAnonRegionsReply(AnonRegionsReply{Regions: []string{"*", long, "b"}})
+	if names := string(got[4:]); names != "*,"+long {
+		t.Fatalf("names %q", names)
+	}
+	if len(got)+4 > 160 {
+		t.Fatalf("reply plaintext of %d bytes pads past what a companion forwards", len(got)+4)
+	}
+}

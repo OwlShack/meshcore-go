@@ -2,6 +2,7 @@ package meshcore
 
 import (
 	"bytes"
+	"crypto/aes"
 	"encoding/binary"
 	"fmt"
 	"strings"
@@ -63,6 +64,48 @@ func BuildAnonRequest(reqType byte, replyPath []byte, hashSize uint8) ([]byte, e
 		return nil, fmt.Errorf("meshcore: reply path of %d bytes is longer than %d", len(replyPath), MaxPathSize)
 	}
 	return append([]byte{reqType, pathLen}, replyPath...), nil
+}
+
+// ParseAnonRequest decodes the body of an anon REGIONS, OWNER or BASIC request; a login body is an error.
+func ParseAnonRequest(body []byte) (reqType byte, replyPath []byte, hashSize uint8, err error) {
+	if len(body) < 2 {
+		return 0, nil, 0, fmt.Errorf("%w: anon request needs 2 bytes, have %d", ErrTooShort, len(body))
+	}
+	if reqType = body[0]; reqType == 0 || reqType >= ' ' {
+		return 0, nil, 0, fmt.Errorf("meshcore: anon request type 0x%02x is a login", reqType)
+	}
+	if !IsValidPathLen(body[1]) {
+		return 0, nil, 0, fmt.Errorf("meshcore: anon request path length 0x%02x is invalid", body[1])
+	}
+	hashSize, count := PathLenFields(body[1])
+	n := int(hashSize) * int(count)
+	if len(body) < 2+n {
+		return 0, nil, 0, fmt.Errorf("%w: anon request path needs %d bytes, have %d", ErrTooShort, n, len(body)-2)
+	}
+	return reqType, body[2 : 2+n], hashSize, nil
+}
+
+// maxRegionNames keeps a REGIONS reply deliverable to the app: a firmware companion forwards the block-padded
+// plaintext in a frame of len+2 bytes, at most 176, so the padded reply must stay within 160 bytes.
+const maxRegionNames = (176-2)/aes.BlockSize*aes.BlockSize - 8
+
+// BuildAnonRegionsReply encodes a REGIONS reply body, dropping a leading '#' and skipping a name that does not fit.
+// Firmware fits names to 172 bytes, drops a reply over 159 and its companions cannot forward one over 152; this fits
+// to 152, so it matches firmware whenever the reply reaches the app and still answers where firmware would not.
+func BuildAnonRegionsReply(r AnonRegionsReply) []byte {
+	b := binary.LittleEndian.AppendUint32(nil, r.Clock)
+	var names []byte
+	for _, name := range r.Regions {
+		name = strings.TrimPrefix(name, "#")
+		sep := min(len(names), 1)
+		if len(names)+sep+len(name) <= maxRegionNames {
+			if sep == 1 {
+				names = append(names, ',')
+			}
+			names = append(names, name...)
+		}
+	}
+	return append(b, names...)
 }
 
 // AnonRegionsReply is a server's answer to an anon REGIONS request.
