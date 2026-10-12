@@ -15,8 +15,9 @@ import (
 )
 
 var (
-	_ node.Modem        = (*Modem)(nil)
-	_ node.DeadNotifier = (*Modem)(nil)
+	_ node.Modem         = (*Modem)(nil)
+	_ node.DeadNotifier  = (*Modem)(nil)
+	_ node.AirtimeSource = (*Modem)(nil)
 )
 
 type fakeRadio struct {

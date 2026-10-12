@@ -78,6 +78,14 @@ func (q *QueuedRadio) TxStats() TxStats {
 	return q.tx.stats()
 }
 
+// EstAirtime returns the wrapped radio's airtime estimate, or 0 when it has none.
+func (q *QueuedRadio) EstAirtime(packetLen int) uint32 {
+	if src, ok := q.inner.(AirtimeSource); ok {
+		return src.EstAirtime(packetLen)
+	}
+	return 0
+}
+
 func (q *QueuedRadio) SetDataHandler(h func(*meshcore.Packet)) { q.inner.SetDataHandler(h) }
 func (q *QueuedRadio) SetRawDataHandler(h func([]byte, float32, int8, bool)) {
 	q.inner.SetRawDataHandler(h)
