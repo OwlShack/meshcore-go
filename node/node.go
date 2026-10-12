@@ -78,6 +78,8 @@ type Node struct {
 
 	noReciprocalPath bool
 
+	clock UniqueClock
+
 	cbMu         sync.RWMutex
 	errH         func(error)
 	allowForward func(*meshcore.Packet) bool
@@ -385,6 +387,9 @@ func (n *Node) estAirtime(packetLen int) uint32 {
 	}
 	return n.txCfg.airtimeEstimator(packetLen)
 }
+
+// UniqueTimestamp returns a Unix-second timestamp later than any it returned before, for DMs, requests and logins.
+func (n *Node) UniqueTimestamp() uint32 { return n.clock.Next() }
 
 func (n *Node) Identity() meshcore.LocalIdentity {
 	n.identityMu.RLock()
