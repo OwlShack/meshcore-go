@@ -12,7 +12,12 @@ tests, CI and tooling get no entry, however big the PR, and nothing lists what i
 `### Added`, `### Changed` and `### Fixed`, plus `### Upgrading` when users must change their
 code. `scripts/prepare-release.sh` renames the section for the release.
 
-## Unreleased
+## v1.8.0 - 2026-10-12
+
+Baseline `v1.7.0`. Nodes can now answer as servers: anonymous request replies, discover and advert
+builders, and unique timestamps. Airtime now comes from the radio, as in firmware, so a node no
+longer relays with no delay because nobody passed it an estimator. Also fixes the flood relay
+delay, a `ReverseHops` panic and an openHop `Connect` race.
 
 ### Added
 
@@ -53,6 +58,12 @@ code. `scripts/prepare-release.sh` renames the section for the release.
 - **openHop commands sent straight after `Connect` no longer fail.** `Connect` could return before
   the modem was ready, so a command issued immediately, such as `SetConfig`, returned
   `ErrNotConnected`.
+
+### Upgrading
+
+- **No code changes are needed.** The airtime estimator options can now be removed, since modems
+  supply their own. On KISS the estimate starts once `SetRadio`, `SetRadioWait` or
+  `RadioConfiguration` has run; until then a node logs one warning.
 
 ## v1.7.0 - 2026-10-08
 
