@@ -32,6 +32,14 @@ code. `scripts/prepare-release.sh` renames the section for the release.
 
 ### Changed
 
+- **Airtime comes from the radio, as in firmware.** Every modem now has `EstAirtime`, built from
+  its live radio config, and `RadioMux` and `Node` read it through the new `node.AirtimeSource`
+  interface. Before, a node needed `WithAirtimeEstimator` passed by hand, and one that went without
+  relayed with no delay, kept no TX budget and counted no airtime. The KISS modem learns its config
+  from `SetRadio`, `SetRadioWait` or `RadioConfiguration` and then sizes the TX_DONE wait from it.
+  The estimator options still override. A node whose radio gives no estimate logs one warning.
+- **openHop's airtime follows `SetConfig`.** `AirtimeEstimator` used to keep the config it was
+  called under. It and the sx12xx one are deprecated, since nothing needs to pass them now.
 - **`ParseLoginRequest` refuses an anonymous request.** A body starting with a control byte is a
   REGIONS, OWNER or BASIC request, not a password; room servers still read every body as a login.
 

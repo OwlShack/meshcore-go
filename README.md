@@ -198,8 +198,8 @@ modem, err := sx12xx.NewModem(radio,
 if err != nil { log.Fatal(err) }
 defer modem.Close()
 
-mux := node.NewRadioMux(modem, node.WithMuxAirtimeEstimator(modem.AirtimeEstimator()))
-n := node.New(identity, mux.NewRadio(), node.WithAirtimeEstimator(modem.AirtimeEstimator()))
+mux := node.NewRadioMux(modem)
+n := node.New(identity, mux.NewRadio())
 ```
 
 The pin names are the board's, not the chip's: the values above are a Waveshare-style SX1262 hat on a Pi 4. Check your hat's schematic before running it.
@@ -260,13 +260,13 @@ Both modules provide `SerialTransport` (via `go.bug.st/serial`) and `TCPTranspor
 
 Inbound frames are buffered (1024 by default, `WithInboundBuffer`); when full, the oldest is dropped with a warning so the read loop never blocks. Corrupted streams resync at the next frame boundary.
 
-TX flow control is on by default. `SendData` serializes transmissions and rejects empty or over-255-byte packets, then waits for `HW_RESP_TX_DONE`; a result byte other than success returns `ErrTxFailed`. The wait is 15 seconds (`WithTxFlowControl`) or, with `WithTxAirtimeEstimator`, the firmware's own worst-case budget: TXDELAY plus 1.5× the airtime of a 255-byte packet plus 1.5× the packet's airtime plus a second. Pass the same `LoRaAirtimeEstimator` you give the node. Completion processing happens before user callbacks and cannot be lost through inbound queue overflow. Hardware errors are counted and reported, but do not resolve a transmission: firmware also raises `HW_ERR_TX_BUSY` for host-output backpressure. `ErrTxBusy` remains exported for compatibility but is not returned.
+TX flow control is on by default. `SendData` serializes transmissions and rejects empty or over-255-byte packets, then waits for `HW_RESP_TX_DONE`; a result byte other than success returns `ErrTxFailed`. Once the radio config is known, from `SetRadio`, `SetRadioWait` or `RadioConfiguration`, the wait is the firmware's own worst-case budget: TXDELAY plus 1.5× the airtime of a 255-byte packet plus 1.5× the packet's airtime plus a second. Before that it is 15 seconds (`WithTxFlowControl`). `EstAirtime` gives the airtime for that config, which `RadioMux` and `Node` read themselves; `WithTxAirtimeEstimator` overrides it. Completion processing happens before user callbacks and cannot be lost through inbound queue overflow. Hardware errors are counted and reported, but do not resolve a transmission: firmware also raises `HW_ERR_TX_BUSY` for host-output backpressure. `ErrTxBusy` remains exported for compatibility but is not returned.
 
 A timeout returns `ErrTxTimeout` without cancelling the firmware transmission, and a failed write may still have reached the firmware. Until the late `TX_DONE` arrives, further sends return `ErrTxPending` without writing; the node TX engine re-queues those with a short backoff by default. `Connect` abandons the outstanding wait (counted in `ModemStats.TxOutcomeLost`), because a reconnect may have rebooted the firmware. `WithTxFlowControl(0)` disables completion tracking and leaves scheduling to the caller. Closing an interrupted send returns `ErrModemClosed`; a lost connection returns `ErrDisconnected`, never confirmed success.
 
 Firmware enables RX metadata by default, so `Connect` always pushes the modem's own setting (`WithSignalReport`, default off). `SetSignalReport` requests a runtime change; firmware's `0x9A` confirmation updates local metadata pairing. Disabling flushes held data without metadata. RX metadata reaches both general and hardware callbacks after internal pairing. DATA callbacks always run serially in receive order; `WithHandlerWorkers` parallelizes non-DATA callbacks only. Slow DATA callbacks can still cause inbound drops, but cannot block internal TX completion. `Close` is terminal for a modem instance; reconnect the transport using a live modem or create a new instance after closing it.
 
-`SendKissCommand` sends the standard KISS parameters (TXDELAY, PERSISTENCE, SLOTTIME, TXTAIL, FULLDUPLEX). The firmware defaults to a 500 ms TXDELAY and p-persistent CSMA with P=63 and 100 ms slots underneath the node's own scheduling. Commands longer than the firmware's 512-byte receive buffer return `ErrFrameTooLarge` instead of being silently dropped. `SetTxDelay`, `SetSlotTime`, `SetPersistence` and `SetFullDuplex` set them in real units, and with `WithTxAirtimeEstimator` the TX_DONE wait follows the TXDELAY, slot time, persistence and full duplex set. `SetRadio`, `SetTxPower` and `Reboot` are answered with `HW_RESP_OK`, not the `cmd|0x80` code; `SetRadioWait`, `SetTxPowerWait`, `RebootWait` and `SetSignalReportWait` wait for that answer. `RadioConfiguration` and `TxPowerLevel` return the firmware's cached values, which are zero until the host sets them.
+`SendKissCommand` sends the standard KISS parameters (TXDELAY, PERSISTENCE, SLOTTIME, TXTAIL, FULLDUPLEX). The firmware defaults to a 500 ms TXDELAY and p-persistent CSMA with P=63 and 100 ms slots underneath the node's own scheduling. Commands longer than the firmware's 512-byte receive buffer return `ErrFrameTooLarge` instead of being silently dropped. `SetTxDelay`, `SetSlotTime`, `SetPersistence` and `SetFullDuplex` set them in real units, and once the airtime is known the TX_DONE wait follows the TXDELAY, slot time, persistence and full duplex set. `SetRadio`, `SetTxPower` and `Reboot` are answered with `HW_RESP_OK`, not the `cmd|0x80` code; `SetRadioWait`, `SetTxPowerWait`, `RebootWait` and `SetSignalReportWait` wait for that answer. `RadioConfiguration` and `TxPowerLevel` return the firmware's cached values, which are zero until the host sets them.
 
 Every hardware query has a typed method that takes a context and waits for the reply, including the modem's own identity and crypto (`PublicKey`, `Sign`, `Verify`, `Encrypt`, `Decrypt`, `SharedSecret`, `Hash`, `Random`) and `Airtime` and `Sensors`. A hardware error is attributed only to the command that caused it, so a failed setting never fails another request. Answers are matched on the read goroutine, so `Request` may be called from a frame or data handler.
 
@@ -302,7 +302,7 @@ Data handlers run synchronously on the receive goroutine, so a slow one costs pa
 
 `Modem.NoiseFloor` and `Modem.PacketScore` report what a stats or packet-log consumer needs without it having to carry the radio config around; the score uses the spreading factor the radio is configured with and pairs with `node.RxDelayForScore`.
 
-Pass `modem.AirtimeEstimator()` to `node.WithMuxAirtimeEstimator` and `node.WithAirtimeEstimator` so the TX budget and relay timing match the radio's actual modulation.
+`Modem.EstAirtime` gives the time on air for the configured modulation, and `RadioMux` and `Node` read it themselves, so the TX budget and relay timing match the radio without further wiring.
 
 ### openHop modems (`hardware/openhop`)
 
@@ -326,7 +326,7 @@ m := openhop.New(openhop.TCPDialer("192.168.1.50:5055", 0), openhop.Config{
     },
 })
 if err := m.Connect(ctx); err != nil { /* the worker keeps retrying */ }
-mux := node.NewRadioMux(m, node.WithMuxAirtimeEstimator(m.AirtimeEstimator()))
+mux := node.NewRadioMux(m)
 ```
 
 `Connect` authenticates when a token is set, pings, and pushes the radio configuration; it returns that handshake's outcome but starts the reconnection worker either way, so a modem that is not up yet is waited for rather than fatal. Commands return `ErrNotConnected` until it answers. Reconnection backs off 1, 2, 5, 10 then 30 seconds, and re-runs the whole handshake, because the modem may have rebooted: the radio configuration, the CAD thresholds and the auto-CAD setting are all re-pushed from what the host last asked for, whether through `Config` or a later `SetConfig`, `SetCADParams` or `SetAutoCAD`. A command in flight when the link drops ends with `ErrDisconnected` rather than waiting out its timeout.
@@ -357,7 +357,7 @@ Regions also follow the firmware. A transport flood is relayed only when its cod
 
 A `RadioMux` remembers every packet it transmits, as firmware's markSeen-on-send does for a device. A copy that a neighbour bounces back is still delivered to each virtual radio but arrives flagged do-not-retransmit, so a repeater Node never re-floods a packet that its companion Node on the same radio originated.
 
-For airtime-aware operation through a `RadioMux`, pass the same estimator to both `WithMuxAirtimeEstimator` (the shared TX budget) and `WithAirtimeEstimator` on each node (RX and relay timing). Configuring the mux alone does not configure node timing.
+Airtime drives the shared TX budget, relay and receive delays and the airtime stats. As in firmware, where the radio answers `getEstAirtimeFor`, a modem that implements `node.AirtimeSource` (every modem here does) supplies it: `RadioMux` reads it from the modem, and a `Node` reads it from its radio, including a mux's virtual radio. `WithMuxAirtimeEstimator` and `WithAirtimeEstimator` override it. A node whose radio gives no estimate logs one warning, since its relay delays are then 0.
 
 #### Handler contract
 
