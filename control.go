@@ -105,3 +105,23 @@ func (c *Control) DiscoverResponse() (*DiscoverResponse, error) {
 	}
 	return resp, nil
 }
+
+// NewDiscoverRequest builds a DISCOVER_REQ; TypeFilter is a bitmask of 1 << AdvertType*, and Since is always sent, as firmware does.
+func NewDiscoverRequest(r DiscoverRequest) *Control {
+	flags := ControlSubTypeDiscoverReq << 4
+	if r.PrefixOnly {
+		flags |= 0x01
+	}
+	data := binary.LittleEndian.AppendUint32([]byte{r.TypeFilter}, r.Tag)
+	return &Control{Flags: flags, Data: binary.LittleEndian.AppendUint32(data, r.Since)}
+}
+
+// NewDiscoverResponse builds a DISCOVER_RESP to a request; prefixOnly sends only the first 8 bytes of PubKey.
+func NewDiscoverResponse(r DiscoverResponse, prefixOnly bool) *Control {
+	pub := r.PubKey
+	if prefixOnly {
+		pub = pub[:min(len(pub), 8)]
+	}
+	data := binary.LittleEndian.AppendUint32([]byte{byte(SNRToWire(r.SNR))}, r.Tag)
+	return &Control{Flags: ControlSubTypeDiscoverResp<<4 | r.NodeType&0x0F, Data: append(data, pub...)}
+}

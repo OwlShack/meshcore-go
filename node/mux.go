@@ -55,8 +55,16 @@ func (v *virtualRadio) Enqueue(data []byte, priority uint8, delay time.Duration)
 	return v.mux.enqueue(data, priority, delay)
 }
 
+// EstAirtime returns the mux's airtime estimate, or 0 when it has none.
+func (v *virtualRadio) EstAirtime(packetLen int) uint32 {
+	if v.mux.est == nil {
+		return 0
+	}
+	return v.mux.est(packetLen)
+}
+
 func (v *virtualRadio) TxQueueLen() int {
-	return v.mux.txQueueLen()
+	return v.mux.TxQueueLen()
 }
 
 func (v *virtualRadio) AddOutboundHandler(h func([]byte)) {
@@ -115,6 +123,7 @@ func (v *virtualRadio) deliver(pkt *meshcore.Packet, raw []byte, snr float32, rs
 // incoming packet to every virtual radio whose PacketFilter accepts it.
 type RadioMux struct {
 	modem  Modem
+	est    AirtimeEstimator
 	log    *slog.Logger
 	errH   func(error)
 	mu     sync.RWMutex
@@ -157,6 +166,7 @@ func WithMuxMaxTxQueue(size int) MuxOption {
 	}
 }
 
+// WithMuxAirtimeEstimator overrides the modem's own EstAirtime for TX budgeting and its radios.
 func WithMuxAirtimeEstimator(est AirtimeEstimator) MuxOption {
 	return func(c *muxConfig) {
 		c.airtimeEstimator = est
@@ -189,6 +199,9 @@ func NewRadioMux(modem Modem, opts ...MuxOption) *RadioMux {
 	for _, opt := range opts {
 		opt(&cfg)
 	}
+	if src, ok := modem.(AirtimeSource); ok && cfg.airtimeEstimator == nil {
+		cfg.airtimeEstimator = src.EstAirtime
+	}
 	if cfg.airtimeEstimator != nil {
 		cfg.txOpts = append(cfg.txOpts, withTxAirtimeBudget(newAirtimeBudget(cfg.airtimeFactor, cfg.dutyCycleWindow, cfg.airtimeEstimator)))
 	}
@@ -196,6 +209,7 @@ func NewRadioMux(modem Modem, opts ...MuxOption) *RadioMux {
 		cfg.log = slog.Default()
 	}
 	m := &RadioMux{
+		est:   cfg.airtimeEstimator,
 		modem: modem,
 		log:   cfg.log,
 		errH:  cfg.errH,
@@ -213,7 +227,8 @@ func (m *RadioMux) enqueue(data []byte, priority uint8, delay time.Duration) boo
 	return m.tx.enqueue(data, priority, delay)
 }
 
-func (m *RadioMux) txQueueLen() int {
+// TxQueueLen returns how many packets wait to transmit, the firmware's getOutboundTotal.
+func (m *RadioMux) TxQueueLen() int {
 	return m.tx.queueLen()
 }
 

@@ -203,12 +203,17 @@ func TestNode_TxQueueLenWithoutBudget(t *testing.T) {
 }
 
 func TestFloodRetransmitDelay_Range(t *testing.T) {
-	for range 100 {
-		d := FloodRetransmitDelay(100)
-		maxDelay := time.Duration(5*100*52/50/2) * time.Millisecond
-		if d < 0 || d > maxDelay {
-			t.Errorf("FloodRetransmitDelay(100) = %v, want 0..%v", d, maxDelay)
+	seen := map[time.Duration]bool{}
+	for range 1000 {
+		seen[FloodRetransmitDelay(100)] = true
+	}
+	for slot := range 5 {
+		if !seen[time.Duration(slot*52)*time.Millisecond] {
+			t.Errorf("slot %d never chosen: %v", slot, seen)
 		}
+	}
+	if len(seen) != 5 {
+		t.Errorf("delays %v, want slots 0 to 4 of 52ms", seen)
 	}
 }
 

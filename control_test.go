@@ -1,6 +1,7 @@
 package meshcore
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/hex"
 	"strings"
@@ -397,4 +398,43 @@ func TestControlDiscoverResponse_TooShort(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for short data")
 	}
+}
+
+func TestDiscoverBuilders(t *testing.T) {
+	req := DiscoverRequest{TypeFilter: 1 << AdvertTypeRepeater, Tag: 0x04030201}
+	b, _ := NewDiscoverRequest(req).ToBytes()
+	if got := hex.EncodeToString(b); got != "80"+"04"+"01020304"+"00000000" {
+		t.Fatalf("request = %s", got)
+	}
+	req.PrefixOnly, req.Since = true, 7
+	c, _ := ControlFromBytes(mustBytes(NewDiscoverRequest(req).ToBytes()))
+	if got, err := c.DiscoverRequest(); err != nil || *got != req {
+		t.Fatalf("request round trip = %+v, %v", got, err)
+	}
+
+	pub := make([]byte, PubKeySize)
+	for i := range pub {
+		pub[i] = byte(i)
+	}
+	resp := DiscoverResponse{NodeType: AdvertTypeRepeater, SNR: -5.25, Tag: 0x04030201, PubKey: pub}
+	b, _ = NewDiscoverResponse(resp, false).ToBytes()
+	if len(b) != 38 || hex.EncodeToString(b[:6]) != "92"+"eb"+"01020304" {
+		t.Fatalf("response = %x", b)
+	}
+	c, _ = ControlFromBytes(b)
+	got, err := c.DiscoverResponse()
+	if err != nil || got.NodeType != resp.NodeType || got.SNR != resp.SNR || got.Tag != resp.Tag || !bytes.Equal(got.PubKey, pub) {
+		t.Fatalf("response round trip = %+v, %v", got, err)
+	}
+	b, _ = NewDiscoverResponse(resp, true).ToBytes()
+	if len(b) != 14 || !bytes.Equal(b[6:], pub[:8]) {
+		t.Fatalf("prefix-only response = %x", b)
+	}
+}
+
+func mustBytes(b []byte, err error) []byte {
+	if err != nil {
+		panic(err)
+	}
+	return b
 }

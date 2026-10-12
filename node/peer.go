@@ -127,8 +127,9 @@ func (pt *PeerTable) fillPeer(p *Peer, adv *meshcore.Advert, snr float32, rssi i
 	}
 }
 
-// ReverseHops returns path with its hashSize-byte hops reversed, dropping any trailing partial hop.
+// ReverseHops returns path with its hashSize-byte hops reversed (0 means 1), dropping any trailing partial hop.
 func ReverseHops(path []byte, hashSize int) []byte {
+	hashSize = max(hashSize, 1)
 	out := make([]byte, 0, len(path))
 	for i := len(path) - len(path)%hashSize - hashSize; i >= 0; i -= hashSize {
 		out = append(out, path[i:i+hashSize]...)

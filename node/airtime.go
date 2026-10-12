@@ -16,6 +16,12 @@ const (
 // of the given byte length.
 type AirtimeEstimator func(packetLen int) uint32
 
+// AirtimeSource is a Modem or Radio that knows its own time on air, the firmware's getEstAirtimeFor;
+// RadioMux and Node use it unless given an estimator. It returns 0 while the radio config is unknown.
+type AirtimeSource interface {
+	EstAirtime(packetLen int) uint32
+}
+
 type airtimeBudget struct {
 	txBudgetMs     float64
 	lastUpdate     time.Time

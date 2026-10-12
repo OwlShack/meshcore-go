@@ -12,6 +12,59 @@ tests, CI and tooling get no entry, however big the PR, and nothing lists what i
 `### Added`, `### Changed` and `### Fixed`, plus `### Upgrading` when users must change their
 code. `scripts/prepare-release.sh` renames the section for the release.
 
+## v1.8.0 - 2026-10-12
+
+Baseline `v1.7.0`. Nodes can now answer as servers: anonymous request replies, discover and advert
+builders, and unique timestamps. Airtime now comes from the radio, as in firmware, so a node no
+longer relays with no delay because nobody passed it an estimator. Also fixes the flood relay
+delay, a `ReverseHops` panic and an openHop `Connect` race.
+
+### Added
+
+- **Servers can answer anonymous requests.** `ParseAnonRequest` reads a REGIONS, OWNER or BASIC
+  request, and `BuildAnonRegionsReply`, `BuildAnonOwnerReply` and `BuildAnonBasicReply` encode the
+  replies. The regions reply drops a leading `#` and skips names that do not fit. Names stop at 152
+  bytes, the most a firmware companion can pass on to the app; firmware itself sends up to 159.
+- **Discover builders.** `NewDiscoverRequest` and `NewDiscoverResponse` build the control payloads
+  that `DiscoverRequest` and `DiscoverResponse` parse; a response to a prefix-only request carries
+  the first 8 bytes of the key.
+- **`NewAdvert` builds a signed advert** from an identity, app data and timestamp.
+- **`node.UniqueClock` and `Node.UniqueTimestamp`** hand out timestamps that always increase, the
+  firmware's `getCurrentTimeUnique`, so two requests in the same second are not taken as replays.
+  They order the stamps only: concurrent senders must enqueue in stamp order, since firmware drops a
+  request older than the last one it took.
+- **`RadioMux.TxQueueLen`** reports how many packets wait to transmit without opening a radio.
+- **`node.WithAdvertPathHashSize` sets the hash size for periodic self-adverts.** Firmware floods
+  its self-advert with `path_hash_mode + 1` bytes per hop; until now a node always used 1.
+
+### Changed
+
+- **Airtime comes from the radio, as in firmware.** Every modem now has `EstAirtime`, built from
+  its live radio config, and `RadioMux` and `Node` read it through the new `node.AirtimeSource`
+  interface. Before, a node needed `WithAirtimeEstimator` passed by hand, and one that went without
+  relayed with no delay, kept no TX budget and counted no airtime. The KISS modem learns its config
+  from `SetRadio`, `SetRadioWait` or `RadioConfiguration` and then sizes the TX_DONE wait from it.
+  The estimator options still override. A node whose radio gives no estimate logs one warning.
+- **openHop's airtime follows `SetConfig`.** `AirtimeEstimator` used to keep the config it was
+  called under. It and the sx12xx one are deprecated, since nothing needs to pass them now.
+- **`ParseLoginRequest` refuses an anonymous request.** A body starting with a control byte is a
+  REGIONS, OWNER or BASIC request, not a password; room servers still read every body as a login.
+
+### Fixed
+
+- **Flood relay delay matches firmware.** `FloodRetransmitDelay` picked from 0 to 5 slots where
+  firmware picks 0 to 4, and now rounds the slot length to whole milliseconds as firmware does.
+- **`node.ReverseHops` no longer panics on a hash size of 0**, which now means 1 as elsewhere.
+- **openHop commands sent straight after `Connect` no longer fail.** `Connect` could return before
+  the modem was ready, so a command issued immediately, such as `SetConfig`, returned
+  `ErrNotConnected`.
+
+### Upgrading
+
+- **No code changes are needed.** The airtime estimator options can now be removed, since modems
+  supply their own. On KISS the estimate starts once `SetRadio`, `SetRadioWait` or
+  `RadioConfiguration` has run; until then a node logs one warning.
+
 ## v1.7.0 - 2026-10-08
 
 Baseline `v1.6.0`.
@@ -180,7 +233,10 @@ with firmware priorities. The module is now `github.com/OwlShack/meshcore-go`; s
 - **The module is now `github.com/OwlShack/meshcore-go`, starting with this release.** Go does not
   follow GitHub's redirect for module paths, so replace `github.com/meshcore-go/meshcore-go` in
   your imports and `go.mod`, including the `companion/transport` and `hardware/*` modules. v1.6.0
-  and earlier only resolve under the old path.
+  and earlier only resolve under the old path, so `go get` fails while `go.mod` names v1.6.0 under
+  the new one. Set the version as you change the path: run
+  `go mod edit -require=github.com/OwlShack/meshcore-go@v1.7.0`, and the same for each nested module
+  you use, then `go mod tidy`.
 - **`Seed()` and the sx12xx `NoiseFloor()` return a second value.** Callers need
   `seed, ok := id.Seed()` and should treat `!ok` as an identity that cannot be saved by its seed;
   save the original `prv.key` bytes instead. For the noise floor, use `floor, ok := m.NoiseFloor()`

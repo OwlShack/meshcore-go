@@ -12,7 +12,7 @@
 //		},
 //	})
 //	err := m.Connect(ctx)
-//	mux := node.NewRadioMux(m, node.WithMuxAirtimeEstimator(m.AirtimeEstimator()))
+//	mux := node.NewRadioMux(m)
 package openhop
 
 import (

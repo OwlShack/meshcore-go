@@ -27,20 +27,11 @@ func (n *Node) selfAdvert() {
 }
 
 func (n *Node) sendAdvert() {
-	appBytes, err := n.advertData.ToBytes()
+	adv, err := meshcore.NewAdvert(n.Identity(), *n.advertData, uint32(time.Now().Unix()))
 	if err != nil {
 		n.dispatchError(err)
 		return
 	}
-
-	id := n.Identity()
-	adv := &meshcore.Advert{
-		PublicKey:  id.Identity,
-		Timestamp:  uint32(time.Now().Unix()),
-		RawAppData: appBytes,
-	}
-	adv.SignWith(id)
-
 	payload, err := adv.ToBytes()
 	if err != nil {
 		n.dispatchError(err)
@@ -51,7 +42,7 @@ func (n *Node) sendAdvert() {
 		Header:  meshcore.MakeHeader(meshcore.RouteTypeFlood, meshcore.PayloadTypeAdvert, 0),
 		Payload: payload,
 	}
-	if err := n.SendFlood(pkt, n.regions.Default(), meshcore.PathHashSize, 0); err != nil {
+	if err := n.SendFlood(pkt, n.regions.Default(), n.advertHashSize, 0); err != nil {
 		n.dispatchError(err)
 	}
 }

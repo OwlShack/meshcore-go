@@ -68,6 +68,12 @@ func TestLoginRequest(t *testing.T) {
 	if _, err := ParseLoginRequest([]byte{1, 2, 3}, true); !errors.Is(err, ErrTooShort) {
 		t.Fatalf("short room login err = %v", err)
 	}
+	if _, err := ParseLoginRequest([]byte{AnonReqTypeOwner, 0}, false); err == nil {
+		t.Fatal("anon OWNER request parsed as a login")
+	}
+	if back, err := ParseLoginRequest([]byte{0}, false); err != nil || back.Password != "" {
+		t.Fatalf("blank login = %+v, %v", back, err)
+	}
 }
 
 func TestLoginReply(t *testing.T) {
@@ -255,12 +261,40 @@ func TestAnonOwnerAndBasicReplies(t *testing.T) {
 	if _, err := ParseAnonOwnerReply([]byte{1}); !errors.Is(err, ErrTooShort) {
 		t.Fatalf("short owner err = %v", err)
 	}
+
+	owner := AnonOwnerReply{Clock: 0x40302010, Name: "Hilltop", Owner: "Kiri\nPh 021"}
+	if b := BuildAnonOwnerReply(owner); !bytes.Equal(b, append(mustHex(t, "10203040"), "Hilltop\nKiri\nPh 021"...)) {
+		t.Fatalf("owner built %x", b)
+	}
+	b := BuildAnonBasicReply(AnonBasicReply{Clock: 0x40302010, Features: 0x83})
+	if !bytes.Equal(b, mustHex(t, "10203040"+"83")) {
+		t.Fatalf("basic built %x", b)
+	}
 }
 
 func TestBuildAnonRequest(t *testing.T) {
 	got, err := BuildAnonRequest(AnonReqTypeOwner, []byte{0xA1}, 1)
 	if want := []byte{AnonReqTypeOwner, 0x01, 0xA1}; err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("owner request = %x, %v; want %x", got, err, want)
+	}
+}
+
+func TestParseAnonRequest(t *testing.T) {
+	body, _ := BuildAnonRequest(AnonReqTypeRegions, []byte{1, 2, 3, 4}, 2)
+	typ, path, size, err := ParseAnonRequest(append(body, 0, 0))
+	if err != nil || typ != AnonReqTypeRegions || !bytes.Equal(path, []byte{1, 2, 3, 4}) || size != 2 {
+		t.Fatalf("parsed %d %x %d, %v", typ, path, size, err)
+	}
+	for name, bad := range map[string][]byte{
+		"login":      []byte("pw"),
+		"blank":      {0, 0},
+		"short":      {AnonReqTypeBasic},
+		"path short": {AnonReqTypeBasic, 0x02, 0xA1},
+		"bad len":    {AnonReqTypeBasic, 0xC1, 0xA1},
+	} {
+		if _, _, _, err := ParseAnonRequest(bad); err == nil {
+			t.Errorf("%s: no error", name)
+		}
 	}
 }
 
