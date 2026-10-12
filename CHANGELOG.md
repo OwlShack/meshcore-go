@@ -14,8 +14,16 @@ code. `scripts/prepare-release.sh` renames the section for the release.
 
 ## Unreleased
 
+### Added
+
+- **`node.WithAdvertPathHashSize` sets the hash size for periodic self-adverts.** Firmware floods
+  its self-advert with `path_hash_mode + 1` bytes per hop; until now a node always used 1.
+
 ### Fixed
 
+- **Flood relay delay matches firmware.** `FloodRetransmitDelay` picked from 0 to 5 slots where
+  firmware picks 0 to 4, and now rounds the slot length to whole milliseconds as firmware does.
+- **`node.ReverseHops` no longer panics on a hash size of 0**, which now means 1 as elsewhere.
 - **openHop commands sent straight after `Connect` no longer fail.** `Connect` could return before
   the modem was ready, so a command issued immediately, such as `SetConfig`, returned
   `ErrNotConnected`.

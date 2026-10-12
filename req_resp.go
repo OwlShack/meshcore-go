@@ -163,7 +163,8 @@ type CommonStats struct {
 	FloodDups      uint16
 }
 
-// RepeaterStats is a repeater's GET_STATUS reply body.
+// RepeaterStats is a repeater's GET_STATUS reply body. Firmware before v1.8.0 has no RxAirTimeSecs and before v1.12.0
+// no RecvErrors; their replies arrive zero-padded to the cipher block, so those fields read 0 (see OwnerInfo.FirmwareVersion).
 type RepeaterStats struct {
 	CommonStats
 	RxAirTimeSecs uint32

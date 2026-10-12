@@ -451,3 +451,20 @@ func TestNode_LearnedPathsOnly_OrderIndependent(t *testing.T) {
 		})
 	}
 }
+
+func TestReverseHops(t *testing.T) {
+	for _, tc := range []struct {
+		path     []byte
+		hashSize int
+		want     []byte
+	}{
+		{[]byte{1, 2, 3}, 1, []byte{3, 2, 1}},
+		{[]byte{1, 2, 3}, 0, []byte{3, 2, 1}},
+		{[]byte{1, 2, 3, 4, 5}, 2, []byte{3, 4, 1, 2}},
+		{nil, 3, []byte{}},
+	} {
+		if got := ReverseHops(tc.path, tc.hashSize); !bytes.Equal(got, tc.want) {
+			t.Errorf("ReverseHops(%x, %d) = %x, want %x", tc.path, tc.hashSize, got, tc.want)
+		}
+	}
+}

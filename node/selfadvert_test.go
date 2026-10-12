@@ -253,3 +253,25 @@ func TestNode_AdvertWithoutNameNotLearned(t *testing.T) {
 		n.Stop()
 	}
 }
+
+func TestSelfAdvert_PathHashSize(t *testing.T) {
+	radio := &mockRadio{}
+	_ = New(seedIdentity(0x42), radio,
+		WithAdvertData(meshcore.AdvertAppData{Type: "CHAT", Name: "n"}),
+		WithAdvertInterval(time.Hour),
+		WithAdvertPathHashSize(2),
+	)
+	time.Sleep(200 * time.Millisecond)
+
+	sent := radio.sentData()
+	if len(sent) == 0 {
+		t.Fatal("no advert sent")
+	}
+	pkt, err := meshcore.PacketFromBytes(sent[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkt.PathLength != 0x40 {
+		t.Errorf("path_len = %#x, want 0x40 (2-byte hashes, no hops)", pkt.PathLength)
+	}
+}

@@ -6,7 +6,6 @@ import (
 )
 
 func FloodRetransmitDelay(estAirtimeMs uint32) time.Duration {
-	t := float64(estAirtimeMs) * 52.0 / 50.0 / 2.0
-	n := rand.IntN(6)
-	return time.Duration(float64(n)*t) * time.Millisecond
+	t := estAirtimeMs * 52 / 50 / 2
+	return time.Duration(uint32(rand.IntN(5))*t) * time.Millisecond
 }
