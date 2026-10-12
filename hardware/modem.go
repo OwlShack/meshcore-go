@@ -17,7 +17,7 @@ const rxMetaTimeout = 1 * time.Second
 // DefaultInboundBuffer is the default capacity of the inbound frame channel.
 const DefaultInboundBuffer = 1024
 
-// DefaultTxTimeout is the TX_DONE wait used without WithTxAirtimeEstimator.
+// DefaultTxTimeout is the TX_DONE wait used until the radio config is known.
 const DefaultTxTimeout = 15 * time.Second
 
 var (
@@ -92,8 +92,8 @@ func WithTxFlowControl(timeout time.Duration) ModemOption {
 	}
 }
 
-// WithTxAirtimeEstimator sizes the TX_DONE wait from estimated airtime rather
-// than the fixed WithTxFlowControl timeout. Unset by default.
+// WithTxAirtimeEstimator overrides the airtime used to size the TX_DONE wait;
+// without it the modem uses EstAirtime once the radio config is known.
 func WithTxAirtimeEstimator(estimator func(packetLen int) uint32) ModemOption {
 	return func(m *KissModem) { m.txEstimator = estimator }
 }
@@ -134,6 +134,7 @@ type ModemStats struct {
 
 // KissModem represents a KISS TNC modem connection.
 type KissModem struct {
+	radioCfg     atomic.Pointer[RadioConfig]
 	transport    Transport
 	kissPort     int
 	signalReport bool
@@ -560,12 +561,26 @@ func (m *KissModem) SendData(data []byte) error {
 	}
 }
 
-// txWait is the firmware's worst-case TX budget when an estimator is set.
+// EstAirtime returns the time on air in milliseconds for a packet under the radio
+// config last set or read, or 0 before one is known.
+func (m *KissModem) EstAirtime(packetLen int) uint32 {
+	cfg := m.radioCfg.Load()
+	if cfg == nil || cfg.SF == 0 || cfg.BwHz == 0 {
+		return 0
+	}
+	return LoRaAirtimeEstimator(cfg)(packetLen)
+}
+
+// txWait is the firmware's worst-case TX budget once airtime is known.
 func (m *KissModem) txWait(packetLen int) time.Duration {
-	if m.txEstimator == nil {
+	est := m.txEstimator
+	if est == nil {
+		est = m.EstAirtime
+	}
+	if est(KISS_MAX_PACKET_SIZE) == 0 {
 		return m.txTimeout
 	}
-	airtime := time.Duration(m.txEstimator(KISS_MAX_PACKET_SIZE)+m.txEstimator(packetLen)) * time.Millisecond
+	airtime := time.Duration(est(KISS_MAX_PACKET_SIZE)+est(packetLen)) * time.Millisecond
 	return time.Duration(m.txDelay.Load()) + m.csmaWait() + airtime*3/2 + time.Second
 }
 
@@ -652,7 +667,11 @@ func (m *KissModem) SendHardwareCommand(subCmd byte, data []byte) error {
 // SetRadio configures the radio (CR 5..8); the reply is HW_RESP_OK, not
 // HwResp(HW_CMD_SET_RADIO).
 func (m *KissModem) SetRadio(config *RadioConfig) error {
-	return m.SendHardwareCommand(HW_CMD_SET_RADIO, config.ToBytes())
+	if err := m.SendHardwareCommand(HW_CMD_SET_RADIO, config.ToBytes()); err != nil {
+		return err
+	}
+	m.radioCfg.Store(new(*config))
+	return nil
 }
 
 // SetTxPower sets TX power in dBm; the reply is HW_RESP_OK, not HwResp(HW_CMD_SET_TX_POWER).
@@ -693,8 +712,11 @@ func (m *KissModem) SetFullDuplex(on bool) error {
 
 // SetRadioWait configures the radio and waits for the firmware to acknowledge it.
 func (m *KissModem) SetRadioWait(ctx context.Context, config *RadioConfig) error {
-	_, err := m.requestFor(ctx, HW_CMD_SET_RADIO, config.ToBytes(), HW_RESP_OK)
-	return err
+	if _, err := m.requestFor(ctx, HW_CMD_SET_RADIO, config.ToBytes(), HW_RESP_OK); err != nil {
+		return err
+	}
+	m.radioCfg.Store(new(*config))
+	return nil
 }
 
 // SetTxPowerWait sets TX power in dBm and waits for the firmware to acknowledge it.
@@ -1169,7 +1191,11 @@ func (m *KissModem) RadioConfiguration(ctx context.Context) (*RadioConfig, error
 	if err != nil {
 		return nil, err
 	}
-	return RadioConfigFromBytes(data)
+	cfg, err := RadioConfigFromBytes(data)
+	if err == nil && cfg.SF != 0 {
+		m.radioCfg.Store(new(*cfg))
+	}
+	return cfg, err
 }
 
 // TxPowerLevel returns the firmware's cached transmit power in dBm.

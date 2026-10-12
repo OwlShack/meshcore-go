@@ -628,11 +628,11 @@ func TestOTACommands(t *testing.T) {
 	}
 }
 
-func TestAirtimeEstimatorAndPacketScore(t *testing.T) {
+func TestEstAirtimeAndPacketScore(t *testing.T) {
 	f := newFakeModem(t)
 	m := connect(t, f, Config{})
 
-	estimate := m.AirtimeEstimator()
+	estimate := m.EstAirtime
 	short := estimate(100)
 	if short == 0 {
 		t.Fatal("airtime estimate is zero")
@@ -647,7 +647,7 @@ func TestAirtimeEstimatorAndPacketScore(t *testing.T) {
 	if err := m.SetConfig(context.Background(), longPreamble); err != nil {
 		t.Fatal(err)
 	}
-	if ms := m.AirtimeEstimator()(100); ms <= short {
+	if ms := estimate(100); ms <= short {
 		t.Fatalf("longer preamble estimated at %d ms, want more than %d ms", ms, short)
 	}
 	if score := m.PacketScore(10, 32); score <= 0 {

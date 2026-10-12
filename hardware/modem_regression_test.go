@@ -151,6 +151,24 @@ func TestModem_TxWaitFromEstimator(t *testing.T) {
 	}
 }
 
+func TestModem_EstAirtimeFollowsRadioConfig(t *testing.T) {
+	m := NewKissModem(newMockTransport())
+	defer m.Close()
+	if ms := m.EstAirtime(100); ms != 0 || m.txWait(5) != DefaultTxTimeout {
+		t.Fatalf("before SetRadio: airtime %d, txWait %v", ms, m.txWait(5))
+	}
+	cfg := &RadioConfig{FreqHz: 869525000, BwHz: 250000, SF: 11, CR: 5}
+	if err := m.SetRadio(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := m.EstAirtime(100), LoRaAirtimeEstimator(cfg)(100); got != want || got == 0 {
+		t.Fatalf("airtime = %d, want %d", got, want)
+	}
+	if m.txWait(5) == DefaultTxTimeout {
+		t.Fatal("txWait ignores the known radio config")
+	}
+}
+
 func TestModem_CommandSizeGuard(t *testing.T) {
 	tr := newNotifiedTransport()
 	m := NewKissModem(tr)
