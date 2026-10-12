@@ -74,6 +74,7 @@ type Node struct {
 
 	advertData     *meshcore.AdvertAppData
 	advertInterval time.Duration
+	advertHashSize uint8
 
 	noReciprocalPath bool
 
@@ -101,6 +102,7 @@ type nodeConfig struct {
 	learnedPathsOnly bool
 	advertData       *meshcore.AdvertAppData
 	advertInterval   time.Duration
+	advertHashSize   uint8
 	channels         []*meshcore.ChannelEntry
 	maxChannels      int
 	regions          []*meshcore.Region
@@ -182,6 +184,13 @@ func WithAdvertData(data meshcore.AdvertAppData) Option {
 func WithAdvertInterval(d time.Duration) Option {
 	return func(c *nodeConfig) {
 		c.advertInterval = d
+	}
+}
+
+// WithAdvertPathHashSize floods self-adverts with size-byte path hashes (1 to 3), the firmware's path_hash_mode + 1.
+func WithAdvertPathHashSize(size uint8) Option {
+	return func(c *nodeConfig) {
+		c.advertHashSize = size
 	}
 }
 
@@ -303,6 +312,7 @@ func New(identity meshcore.LocalIdentity, radio Radio, opts ...Option) *Node {
 		txCfg:            cfg.tx,
 		advertData:       cfg.advertData,
 		advertInterval:   cfg.advertInterval,
+		advertHashSize:   cfg.advertHashSize,
 		errH:             cfg.errH,
 		floodDelay:       cfg.floodDelay,
 		directDelay:      cfg.directDelay,

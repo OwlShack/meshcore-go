@@ -51,7 +51,7 @@ func (n *Node) sendAdvert() {
 		Header:  meshcore.MakeHeader(meshcore.RouteTypeFlood, meshcore.PayloadTypeAdvert, 0),
 		Payload: payload,
 	}
-	if err := n.SendFlood(pkt, n.regions.Default(), meshcore.PathHashSize, 0); err != nil {
+	if err := n.SendFlood(pkt, n.regions.Default(), n.advertHashSize, 0); err != nil {
 		n.dispatchError(err)
 	}
 }
