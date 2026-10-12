@@ -270,6 +270,17 @@ func (a *Advert) ToBytes() ([]byte, error) {
 	return buffer.Bytes(), nil
 }
 
+// NewAdvert builds id's signed advert carrying data; firmware stamps it with the plain clock, not the unique one.
+func NewAdvert(id LocalIdentity, data AdvertAppData, timestamp uint32) (*Advert, error) {
+	app, err := data.ToBytes()
+	if err != nil {
+		return nil, err
+	}
+	a := &Advert{PublicKey: id.Identity, Timestamp: timestamp, RawAppData: app}
+	a.SignWith(id)
+	return a, nil
+}
+
 func (a *Advert) Sign(privateKey ed25519.PrivateKey) {
 	a.Signature = ed25519.Sign(privateKey, a.signedData())
 }

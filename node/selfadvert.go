@@ -27,20 +27,11 @@ func (n *Node) selfAdvert() {
 }
 
 func (n *Node) sendAdvert() {
-	appBytes, err := n.advertData.ToBytes()
+	adv, err := meshcore.NewAdvert(n.Identity(), *n.advertData, uint32(time.Now().Unix()))
 	if err != nil {
 		n.dispatchError(err)
 		return
 	}
-
-	id := n.Identity()
-	adv := &meshcore.Advert{
-		PublicKey:  id.Identity,
-		Timestamp:  uint32(time.Now().Unix()),
-		RawAppData: appBytes,
-	}
-	adv.SignWith(id)
-
 	payload, err := adv.ToBytes()
 	if err != nil {
 		n.dispatchError(err)
