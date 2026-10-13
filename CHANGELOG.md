@@ -12,7 +12,11 @@ tests, CI and tooling get no entry, however big the PR, and nothing lists what i
 `### Added`, `### Changed` and `### Fixed`, plus `### Upgrading` when users must change their
 code. `scripts/prepare-release.sh` renames the section for the release.
 
-## Unreleased
+## v1.9.0 - 2026-10-13
+
+Baseline `v1.8.0`. A Go program can now be the companion device the MeshCore app connects to. DMs
+can be sent one attempt at a time as firmware sends them, and every transmitted packet reports its
+outcome. Airtime estimates now match firmware to the millisecond.
 
 ### Added
 
@@ -63,6 +67,12 @@ code. `scripts/prepare-release.sh` renames the section for the release.
 
 - **The companion client refuses an empty text message.** `Client.SendTextMessage` with no text
   built a frame firmware refuses; it now returns an error before sending.
+
+### Upgrading
+
+- **No code changes are needed**, with one exception. If you send a CLI command with
+  `SendTextMessage` and wait for `onResult`, stop waiting: firmware never ACKs a CLI command, so
+  it is no longer called. Wait for the reply instead.
 
 ## v1.8.0 - 2026-10-12
 
