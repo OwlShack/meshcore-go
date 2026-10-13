@@ -191,6 +191,13 @@ func WithMuxRetryable(fn func(error) bool) MuxOption {
 	}
 }
 
+// WithMuxTxResult reports each packet's transmit outcome, the firmware's logTx and logTxFail.
+func WithMuxTxResult(f TxResultFunc) MuxOption {
+	return func(c *muxConfig) {
+		c.txOpts = append(c.txOpts, withTxResult(f))
+	}
+}
+
 func NewRadioMux(modem Modem, opts ...MuxOption) *RadioMux {
 	cfg := muxConfig{
 		airtimeFactor:   DefaultAirtimeFactor,
