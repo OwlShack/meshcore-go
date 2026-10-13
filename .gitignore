@@ -27,6 +27,7 @@ cmd/
 .claude/todos/
 .claude/shell-snapshots/
 .claude/statsig/
+.claude/worktrees/
 # Materialized skill caches — regenerated from the committed skills-lock.json
 .claude/skills/
 .agents/
