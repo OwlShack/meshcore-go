@@ -466,6 +466,9 @@ func TestSendTextMessage(t *testing.T) {
 	prefix := [6]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06}
 	var pk [32]byte
 	copy(pk[:], prefix[:])
+	if _, err := c.SendTextMessage(ctx, meshcore.NewIdentity(pk), "", 0); err == nil {
+		t.Fatal("empty text was sent")
+	}
 	sent, err := c.SendTextMessage(ctx, meshcore.NewIdentity(pk), "hello", 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

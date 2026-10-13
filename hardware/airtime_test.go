@@ -9,13 +9,13 @@ func TestLoRaAirtimeEstimator(t *testing.T) {
 		length int
 		want   uint32
 	}{
-		{"SF5 maximum", 5, 255, 144},
-		{"SF6 small", 6, 20, 45},
-		{"SF7 small", 7, 20, 82},
-		{"SF8 small", 8, 20, 153},
-		{"SF9 small", 9, 20, 219},
-		{"SF12 small", 12, 20, 1582},
-		{"SF12 maximum", 12, 255, 9282},
+		{"SF5 maximum", 5, 255, 143},
+		{"SF6 small", 6, 20, 44},
+		{"SF7 small", 7, 20, 81},
+		{"SF8 small", 8, 20, 152},
+		{"SF9 small", 9, 20, 218},
+		{"SF12 small", 12, 20, 1581},
+		{"SF12 maximum", 12, 255, 9281},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -24,6 +24,20 @@ func TestLoRaAirtimeEstimator(t *testing.T) {
 				t.Fatalf("airtime = %d ms, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestLoRaTimeOnAirMicros(t *testing.T) {
+	// SF11 BW250: 8192 us symbols; 100 bytes is 19 coded blocks, (16+8)*4+17+19*5*4 = 493 quarter symbols.
+	cfg := &RadioConfig{BwHz: 250000, SF: 11, CR: 5}
+	if got := LoRaTimeOnAirMicros(cfg, 16, 100); got != 1009664 {
+		t.Fatalf("time on air = %d us, want 1009664", got)
+	}
+	if got := LoRaAirtimeEstimator(cfg)(100); got != 1009 {
+		t.Fatalf("airtime = %d ms, want 1009 (truncated, as firmware)", got)
+	}
+	if got := LoRaTimeOnAirMicros(&RadioConfig{}, 16, 100); got != 0 {
+		t.Fatalf("zero config = %d", got)
 	}
 }
 

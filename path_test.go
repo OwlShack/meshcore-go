@@ -434,7 +434,7 @@ func TestPathPayloadToBytesFiller(t *testing.T) {
 
 func TestPathPayloadToBytesLimits(t *testing.T) {
 	path := make([]byte, 64)
-	ok := &PathPayload{PathLength: MakePathLen(2, 32), Path: path, Extra: make([]byte, maxCombinedPath-64-5)}
+	ok := &PathPayload{PathLength: MakePathLen(2, 32), Path: path, Extra: make([]byte, MaxCombinedPath-64-5)}
 	if _, err := ok.ToBytes(); err != nil {
 		t.Fatalf("combined path at the limit rejected: %v", err)
 	}

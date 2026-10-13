@@ -194,7 +194,9 @@ func (n *Node) handlePeerPath(pkt *meshcore.Packet, peer *Peer, secret, plain []
 		n.acks.notifyCRC(binary.LittleEndian.Uint32(pp.Extra))
 	}
 	if pkt.IsRouteFlood() && !n.noReciprocalPath {
-		n.sendPathReturn(pkt, peer, secret, pp)
+		if err := n.sendPathReturn(peer.Identity, secret, pkt, pp.Path, pp.PathHashSize(), reciprocalPathDelay); err != nil {
+			n.dispatchError(err)
+		}
 	}
 	return true
 }
@@ -202,27 +204,31 @@ func (n *Node) handlePeerPath(pkt *meshcore.Packet, peer *Peer, secret, plain []
 // reciprocalPathDelay is how long a reciprocal path return waits before it is sent.
 const reciprocalPathDelay = 500 * time.Millisecond
 
-// sendPathReturn answers a flood PATH with the route it took to us, sent direct along the path it carried.
-func (n *Node) sendPathReturn(pkt *meshcore.Packet, peer *Peer, secret []byte, pp *meshcore.PathPayload) {
-	body, err := (&meshcore.PathPayload{PathLength: pkt.PathLength, Path: pkt.Path}).ToBytes()
+// SendReciprocalPath tells peer the route flood took to reach us, sent direct along outPath (hashSize-byte hops) after
+// delay, as Mesh.cpp does for a flood PATH; firmware chat nodes also resend it after 3 s to a peer still flooding.
+func (n *Node) SendReciprocalPath(peer meshcore.Identity, flood *meshcore.Packet, outPath []byte, hashSize uint8, delay time.Duration) error {
+	secret, err := n.secrets.get(peer)
 	if err != nil {
-		n.dispatchError(err)
-		return
+		return err
 	}
-	ret, err := meshcore.NewPath(n.Identity(), peer.Identity, body, secret)
+	return n.sendPathReturn(peer, secret, flood, outPath, hashSize, delay)
+}
+
+func (n *Node) sendPathReturn(peer meshcore.Identity, secret []byte, flood *meshcore.Packet, outPath []byte, hashSize uint8, delay time.Duration) error {
+	body, err := (&meshcore.PathPayload{PathLength: flood.PathLength, Path: flood.Path}).ToBytes()
 	if err != nil {
-		n.dispatchError(err)
-		return
+		return err
+	}
+	ret, err := meshcore.NewPath(n.Identity(), peer, body, secret)
+	if err != nil {
+		return err
 	}
 	payload, err := ret.ToBytes()
 	if err != nil {
-		n.dispatchError(err)
-		return
+		return err
 	}
 	out := &meshcore.Packet{Header: meshcore.MakeHeader(meshcore.RouteTypeDirect, meshcore.PayloadTypePath, 0), Payload: payload}
-	if err := n.SendDirect(out, pp.Path, pp.PathHashSize(), reciprocalPathDelay); err != nil {
-		n.dispatchError(err)
-	}
+	return n.SendDirect(out, outPath, hashSize, delay)
 }
 
 func (n *Node) dispatchPacket(pkt *meshcore.Packet) {

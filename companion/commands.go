@@ -94,18 +94,20 @@ func (c GetContactsCommand) ToBytes() []byte {
 	return buf
 }
 
-// AddUpdateContactCommand mirrors the firmware's ContactInfo record.
+// AddUpdateContactCommand mirrors the firmware's ContactInfo record; ToBytes always sends every field.
 type AddUpdateContactCommand struct {
-	PublicKey    [32]byte
-	Type         byte // meshcore.AdvertType*; 0 marks an anonymous slot
-	Flags        byte
-	OutPathLen   byte
-	OutPath      []byte // up to 64 bytes
-	Name         string
-	LastAdvert   uint32
-	Latitude     int32 // degrees * 1e6
-	Longitude    int32
-	LastModified uint32
+	PublicKey       [32]byte
+	Type            byte // meshcore.AdvertType*; 0 marks an anonymous slot
+	Flags           byte
+	OutPathLen      byte
+	OutPath         []byte // up to 64 bytes
+	Name            string
+	LastAdvert      uint32
+	Latitude        int32 // degrees * 1e6
+	Longitude       int32
+	LastModified    uint32
+	HasLatLon       bool // set by ParseAddUpdateContactCommand when the frame carries Latitude and Longitude
+	HasLastModified bool // set by ParseAddUpdateContactCommand when the frame carries LastModified
 }
 
 func (c AddUpdateContactCommand) ToBytes() []byte {
@@ -245,15 +247,20 @@ func (c ResetPathCommand) ToBytes() []byte {
 }
 
 type SetAdvertLatLonCommand struct {
-	Latitude  int32
-	Longitude int32
+	Latitude    int32
+	Longitude   int32
+	Altitude    int32 // firmware reads it but does not use it yet
+	HasAltitude bool
 }
 
 func (c SetAdvertLatLonCommand) ToBytes() []byte {
-	buf := make([]byte, 9)
+	buf := make([]byte, 9, 13)
 	buf[0] = CmdSetAdvertLatLon
 	binary.LittleEndian.PutUint32(buf[1:5], uint32(c.Latitude))
 	binary.LittleEndian.PutUint32(buf[5:9], uint32(c.Longitude))
+	if c.HasAltitude {
+		buf = binary.LittleEndian.AppendUint32(buf, uint32(c.Altitude))
+	}
 	return buf
 }
 
@@ -268,11 +275,16 @@ func (c ShareContactCommand) ToBytes() []byte {
 	return buf
 }
 
+// ExportContactCommand asks for a contact's advert, or the device's own when Self is set.
 type ExportContactCommand struct {
 	PublicKey [32]byte
+	Self      bool
 }
 
 func (c ExportContactCommand) ToBytes() []byte {
+	if c.Self {
+		return []byte{CmdExportContact}
+	}
 	buf := make([]byte, 33)
 	buf[0] = CmdExportContact
 	copy(buf[1:33], c.PublicKey[:])
@@ -437,22 +449,31 @@ func (c SetDevicePinCommand) ToBytes() []byte {
 	return buf
 }
 
+// SetOtherParamsCommand is a partial update: the device keeps any field the frame stops short of.
 type SetOtherParamsCommand struct {
-	ManualAddContacts byte
-	HasExtended       bool // also send the fields below; without it the device keeps them
-	TelemetryModeBase byte // 0-3
-	TelemetryModeLoc  byte // 0-3
-	TelemetryModeEnv  byte // 0-3
-	AdvertLocPolicy   byte
-	MultiAcks         byte
+	ManualAddContacts  byte
+	HasExtended        bool // also send the fields below; without it the device keeps them
+	TelemetryModeBase  byte // 0-3
+	TelemetryModeLoc   byte // 0-3
+	TelemetryModeEnv   byte // 0-3
+	AdvertLocPolicy    byte
+	MultiAcks          byte
+	HasTelemetryModes  bool // send the telemetry modes only
+	HasAdvertLocPolicy bool // send the telemetry modes and AdvertLocPolicy only
 }
 
 func (c SetOtherParamsCommand) ToBytes() []byte {
-	if !c.HasExtended {
-		return []byte{CmdSetOtherParams, c.ManualAddContacts}
-	}
 	modes := c.TelemetryModeEnv&3<<4 | c.TelemetryModeLoc&3<<2 | c.TelemetryModeBase&3
-	return []byte{CmdSetOtherParams, c.ManualAddContacts, modes, c.AdvertLocPolicy, c.MultiAcks}
+	buf := []byte{CmdSetOtherParams, c.ManualAddContacts, modes, c.AdvertLocPolicy, c.MultiAcks}
+	switch {
+	case c.HasExtended:
+		return buf
+	case c.HasAdvertLocPolicy:
+		return buf[:4]
+	case c.HasTelemetryModes:
+		return buf[:3]
+	}
+	return buf[:2]
 }
 
 // SendTelemetryReqCommand requests telemetry from a contact, or from the companion itself when Self is set.
@@ -579,9 +600,11 @@ func (c SendAnonReqCommand) ToBytes() []byte {
 	return buf
 }
 
+// SetAutoAddConfigCommand always sends MaxHops; the device keeps its own when a frame has none.
 type SetAutoAddConfigCommand struct {
-	Config  byte
-	MaxHops byte
+	Config     byte
+	MaxHops    byte
+	HasMaxHops bool // set by ParseSetAutoAddConfigCommand when the frame carries MaxHops
 }
 
 func (c SetAutoAddConfigCommand) ToBytes() []byte {

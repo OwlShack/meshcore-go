@@ -49,6 +49,13 @@ func WithQueuedRadioRetryable(fn func(error) bool) QueuedRadioOption {
 	}
 }
 
+// WithQueuedRadioTxResult reports each packet's transmit outcome, the firmware's logTx and logTxFail.
+func WithQueuedRadioTxResult(f TxResultFunc) QueuedRadioOption {
+	return func(c *queuedRadioConfig) {
+		c.txOpts = append(c.txOpts, withTxResult(f))
+	}
+}
+
 func NewQueuedRadio(inner Radio, done chan struct{}, opts ...QueuedRadioOption) *QueuedRadio {
 	cfg := queuedRadioConfig{}
 	for _, opt := range opts {

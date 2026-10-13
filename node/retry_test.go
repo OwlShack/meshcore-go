@@ -492,7 +492,7 @@ func TestNode_SendTextMessage_LengthLimits(t *testing.T) {
 		textLen int
 		sends   int
 	}{
-		{"MaxTextLen stops before the attempts that need a tail", meshcore.MaxTextLen, 3},
+		{"MaxTextLen stops before the attempts that need a tail", meshcore.MaxTextLen, 4},
 		{"MaxRetryTextLen uses every attempt", meshcore.MaxRetryTextLen, 5},
 	}
 	for _, c := range cases {

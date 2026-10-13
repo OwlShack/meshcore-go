@@ -427,6 +427,9 @@ func (c *Client) GetWaitingMessages(ctx context.Context) ([]WaitingMessage, erro
 
 // SendTextMessage sends a text message to a contact and waits for the SentResponse.
 func (c *Client) SendTextMessage(ctx context.Context, peer meshcore.Identity, text string, txtType byte) (companion.SentResponse, error) {
+	if text == "" {
+		return companion.SentResponse{}, errors.New("companion: text message is empty, which firmware refuses")
+	}
 	cmd := companion.SendTxtMsgCommand{
 		TxtType:         txtType,
 		Attempt:         0,

@@ -80,7 +80,8 @@ type Node struct {
 	noReciprocalPath bool
 	noAirtimeWarned  atomic.Bool
 
-	clock UniqueClock
+	clock   UniqueClock
+	stampMu sync.Mutex
 
 	cbMu         sync.RWMutex
 	errH         func(error)
@@ -126,6 +127,7 @@ type nodeTxConfig struct {
 	dutyCycleWindow  time.Duration
 	airtimeEstimator AirtimeEstimator
 	maxTxQueue       int
+	result           TxResultFunc
 }
 
 func WithErrorHandler(h func(error)) Option {
@@ -243,6 +245,13 @@ func WithMaxTxQueue(size int) Option {
 	}
 }
 
+// WithTxResult reports each packet's transmit outcome when the Node queues for its radio; a TxRadio such as a RadioMux radio takes its own option.
+func WithTxResult(f TxResultFunc) Option {
+	return func(c *nodeConfig) {
+		c.tx.result = f
+	}
+}
+
 // WithFloodRetransmitDelay overrides the delay applied before a flood relay is
 // transmitted. Unset, the delay is FloodRetransmitDelay of the estimated airtime.
 func WithFloodRetransmitDelay(f RetransmitDelayFunc) Option {
@@ -350,6 +359,7 @@ func New(identity meshcore.LocalIdentity, radio Radio, opts ...Option) *Node {
 			WithQueuedRadioLogger(n.log),
 			WithQueuedRadioErrorHandler(n.dispatchError),
 			WithQueuedRadioMaxQueue(n.txCfg.maxTxQueue),
+			WithQueuedRadioTxResult(n.txCfg.result),
 		}
 		if n.txCfg.airtimeEstimator != nil {
 			queuedOpts = append(queuedOpts, WithQueuedRadioAirtimeBudget(newAirtimeBudget(n.txCfg.airtimeFactor, n.txCfg.dutyCycleWindow, n.txCfg.airtimeEstimator)))
@@ -652,7 +662,8 @@ func (n *Node) SendGroupText(
 	return n.SendGroupTextScoped(ch, n.regions.Default(), payload, pathHashSize, retryTimeout, maxRetries, onResult)
 }
 
-// SendGroupTextScoped floods a channel message scoped to scope; nil sends it unscoped.
+// SendGroupTextScoped floods a channel message scoped to scope (nil unscoped) and resends it until a repeat is heard,
+// a convenience policy that firmware leaves to the app.
 func (n *Node) SendGroupTextScoped(
 	ch *meshcore.ChannelEntry,
 	scope *meshcore.Region,
@@ -709,7 +720,9 @@ func (n *Node) SendTextMessage(
 	return n.SendTextMessageScoped(peer, n.regions.Default(), text, flags, timestamp, path, pathHashSize, timeout, onResult)
 }
 
-// SendTextMessageScoped sends a DM whose flood attempts are scoped to scope; nil sends them unscoped.
+// SendTextMessageScoped is a convenience retry policy over SendTextAttempt, which firmware leaves to the app: attempts
+// 0 to 2 go along path and the rest flood (all three flood when path is nil), scoped to scope, and timeout 0 waits each
+// attempt's estimated ACK time. A CLI command is sent once and onResult is not called, since firmware does not ACK it.
 func (n *Node) SendTextMessageScoped(
 	peer meshcore.Identity,
 	scope *meshcore.Region,
@@ -721,93 +734,144 @@ func (n *Node) SendTextMessageScoped(
 	timeout time.Duration,
 	onResult func(DMSendResult),
 ) error {
-	if len(text) > meshcore.MaxTextLen {
-		return ErrTextTooLong
+	a := TextAttempt{
+		Peer: peer, Scope: scope, Text: text, Flags: flags, Timestamp: uint32(timestamp.Unix()),
+		Path: path, PathHashSize: pathHashSize,
+	}
+	// A non-nil zero-length path is a 0-hop neighbour and must route direct, so test nil, not length.
+	attempts, directAttempts := 3, 0
+	if path != nil {
+		attempts, directAttempts = 5, 3
+	}
+
+	var send func(attempt int) error
+	send = func(attempt int) error {
+		a.Attempt = attempt
+		a.Path = nil
+		if attempt < directAttempts {
+			a.Path = path
+		}
+		_, err := n.sendTextAttempt(a, timeout, func(r DMSendResult) {
+			if r.Confirmed || attempt+1 >= attempts {
+				if onResult != nil {
+					onResult(r)
+				}
+				return
+			}
+			if err := send(attempt + 1); err != nil {
+				n.log.Warn("text message retry failed", "attempt", attempt+1, "error", err)
+				if onResult != nil {
+					onResult(DMSendResult{Confirmed: false})
+				}
+			}
+		})
+		return err
+	}
+	return send(0)
+}
+
+// TextAttempt is one send of a DM or CLI command, as firmware's sendMessage and sendCommandData take it.
+type TextAttempt struct {
+	Peer         meshcore.Identity
+	Scope        *meshcore.Region // flood scope; nil floods unscoped
+	Text         []byte
+	Flags        byte   // meshcore.TextFlags(txtType); the attempt fills the low 2 bits
+	Timestamp    uint32 // the same for every attempt of one message; see SendStamped
+	Attempt      int
+	Path         []byte // direct route, hops of PathHashSize bytes; nil floods
+	PathHashSize uint8
+}
+
+// TextSent is what firmware's sendMessage returns for one attempt.
+type TextSent struct {
+	ACK     uint32        // expected ACK CRC; 0 for a CLI command, which is not ACKed
+	Timeout time.Duration // estimated ACK time for this attempt, firmware's est_timeout
+	Flood   bool
+}
+
+// SendTextAttempt sends one attempt of a DM or CLI command; onResult, if set, reports its ACK or timeout once.
+func (n *Node) SendTextAttempt(a TextAttempt, onResult func(DMSendResult)) (TextSent, error) {
+	return n.sendTextAttempt(a, 0, onResult)
+}
+
+func (n *Node) sendTextAttempt(a TextAttempt, timeout time.Duration, onResult func(DMSendResult)) (TextSent, error) {
+	if len(a.Text) > meshcore.MaxTextLen {
+		return TextSent{}, ErrTextTooLong
+	}
+	txtType := a.Flags >> 2
+	cli := txtType == meshcore.TxtTypeCLIData || txtType == meshcore.TxtTypeCLICommand
+	attempt := a.Attempt
+	if cli {
+		attempt &= 3
+	} else if attempt > 3 && len(a.Text) > meshcore.MaxRetryTextLen {
+		return TextSent{}, ErrTextTooLong
 	}
 
 	self := n.Identity()
-	secret, err := n.secrets.get(peer)
+	secret, err := n.secrets.get(a.Peer)
 	if err != nil {
-		return err
+		return TextSent{}, err
 	}
-
-	// A non-nil zero-length path is a 0-hop neighbour and must route direct, so test nil, not length.
-	isDirect := path != nil
-
-	// The attempt goes in the flags byte, giving each retransmission a distinct packet hash and ACK CRC.
-	send := func(attempt int, useDirect bool) (uint32, error) {
-		if attempt > 3 && len(text) > meshcore.MaxRetryTextLen {
-			return 0, ErrTextTooLong
-		}
-		plaintext := meshcore.BuildTextPlaintextWithAttempt(timestamp, flags, text, attempt)
-		ackCRC := meshcore.CalcAckHash(textAckHashInput(plaintext, len(text)), self.PublicKeyBytes())
-
-		msg, err := meshcore.NewTextMessage(self, peer, plaintext, secret)
-		if err != nil {
-			return 0, err
-		}
-		msgBytes, err := msg.ToBytes()
-		if err != nil {
-			return 0, err
-		}
-
-		pkt := &meshcore.Packet{
-			Header:  meshcore.MakeHeader(meshcore.RouteTypeFlood, meshcore.PayloadTypeTxtMsg, 0),
-			Payload: msgBytes,
-		}
-		if useDirect {
-			return ackCRC, n.SendDirect(pkt, path, pathHashSize, 0)
-		}
-		return ackCRC, n.SendFlood(pkt, scope, pathHashSize, 0)
-	}
-
-	ackCRC, err := send(0, isDirect)
+	plaintext := meshcore.BuildTextPlaintextWithAttempt(time.Unix(int64(a.Timestamp), 0), a.Flags, a.Text, attempt)
+	msg, err := meshcore.NewTextMessage(self, a.Peer, plaintext, secret)
 	if err != nil {
-		return err
+		return TextSent{}, err
+	}
+	msgBytes, err := msg.ToBytes()
+	if err != nil {
+		return TextSent{}, err
+	}
+	pkt := &meshcore.Packet{
+		Header:  meshcore.MakeHeader(meshcore.RouteTypeFlood, meshcore.PayloadTypeTxtMsg, 0),
+		Payload: msgBytes,
 	}
 
-	var maxRetries, directRetries int
-	if isDirect {
-		maxRetries = 5
-		directRetries = 3
+	sent := TextSent{Flood: a.Path == nil}
+	if sent.Flood {
+		err = n.SendFlood(pkt, a.Scope, a.PathHashSize, 0)
 	} else {
-		maxRetries = 3
-		directRetries = 0
+		err = n.SendDirect(pkt, a.Path, a.PathHashSize, 0)
+	}
+	if err != nil {
+		return TextSent{}, err
 	}
 
-	attempt := 1
-	var registerACK func(crc uint32)
-	registerACK = func(crc uint32) {
-		n.acks.expect(crc, timeout,
-			func(rt time.Duration) {
-				if onResult != nil {
-					onResult(DMSendResult{Confirmed: true, RoundTrip: rt})
-				}
-			},
-			func() {
-				attempt++
-				if attempt > maxRetries {
-					if onResult != nil {
-						onResult(DMSendResult{Confirmed: false})
-					}
-					return
-				}
-
-				retryCRC, err := send(attempt, attempt <= directRetries)
-				if err != nil {
-					n.log.Warn("text message retry failed", "attempt", attempt, "error", err)
-					if onResult != nil {
-						onResult(DMSendResult{Confirmed: false})
-					}
-					return
-				}
-				registerACK(retryCRC)
-			},
-		)
+	airtime := n.estAirtime(rawLen(pkt))
+	if sent.Flood {
+		sent.Timeout = CalcFloodTimeout(airtime)
+	} else {
+		_, hops := meshcore.PathLenFields(pkt.PathLength)
+		sent.Timeout = CalcDirectTimeout(airtime, hops)
 	}
-	registerACK(ackCRC)
+	if cli {
+		return sent, nil
+	}
+	sent.ACK = meshcore.CalcAckHash(textAckHashInput(plaintext, len(a.Text)), self.PublicKeyBytes())
+	if timeout <= 0 {
+		timeout = sent.Timeout
+	}
+	n.acks.expect(sent.ACK, timeout,
+		func(rt time.Duration) {
+			if onResult != nil {
+				onResult(DMSendResult{Confirmed: true, RoundTrip: rt})
+			}
+		},
+		func() {
+			if onResult != nil {
+				onResult(DMSendResult{Confirmed: false})
+			}
+		},
+	)
+	return sent, nil
+}
 
-	return nil
+// SendStamped calls send with a unique timestamp under the node's send-order lock, so packets join the queue in stamp
+// order; send must enqueue before returning and must not call SendStamped. As in firmware, the queue still sends
+// direct before flood and retries a busy send later, so a peer can see a newer stamp first across those.
+func (n *Node) SendStamped(send func(timestamp uint32) error) error {
+	n.stampMu.Lock()
+	defer n.stampMu.Unlock()
+	return send(n.clock.Next())
 }
 
 // textAckHashInput returns the plaintext bytes the ACK hash covers, excluding the attempt tail.
