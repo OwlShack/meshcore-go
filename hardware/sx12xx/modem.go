@@ -225,12 +225,18 @@ func NewModem(radio Radio, cfg *hardware.RadioConfig, opts ...ModemOption) (*Mod
 		c.cadMaxBusy = CADFailMaxDuration
 	}
 
+	airtime := hardware.LoRaAirtimeEstimator(cfg)
+	if _, ok := radio.(*SX127x); ok {
+		// RadioLib's SX127x driver rounds time on air up to the millisecond where its SX126x driver truncates.
+		preamble := hardware.PreambleForSF(cfg.SF)
+		airtime = func(n int) uint32 { return (hardware.LoRaTimeOnAirMicros(cfg, preamble, n) + 999) / 1000 }
+	}
 	m := &Modem{
 		radio:    radio,
 		cfg:      c,
 		sf:       cfg.SF,
 		log:      c.logger,
-		airtime:  hardware.LoRaAirtimeEstimator(cfg),
+		airtime:  airtime,
 		radioCfg: cfg,
 		done:     make(chan struct{}),
 		dead:     make(chan struct{}),

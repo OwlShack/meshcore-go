@@ -6,8 +6,8 @@ import (
 	"fmt"
 )
 
-// maxCombinedPath caps the path and extra bytes one PATH packet can return.
-const maxCombinedPath = MaxPacketPayload - cipherMACSize - aes.BlockSize
+// MaxCombinedPath caps the path and extra bytes one PATH packet can return, firmware's MAX_COMBINED_PATH.
+const MaxCombinedPath = MaxPacketPayload - cipherMACSize - aes.BlockSize
 
 type Path struct {
 	Destination      byte
@@ -92,8 +92,8 @@ func (p *PathPayload) ToBytes() ([]byte, error) {
 	if len(p.Path) != n {
 		return nil, fmt.Errorf("meshcore: path payload with path_len 0x%02x needs %d hop bytes, have %d", p.PathLength, n, len(p.Path))
 	}
-	if n+len(p.Extra)+5 > maxCombinedPath {
-		return nil, fmt.Errorf("meshcore: path payload of %d path and %d extra bytes exceeds %d", n, len(p.Extra), maxCombinedPath)
+	if n+len(p.Extra)+5 > MaxCombinedPath {
+		return nil, fmt.Errorf("meshcore: path payload of %d path and %d extra bytes exceeds %d", n, len(p.Extra), MaxCombinedPath)
 	}
 	out := append([]byte{p.PathLength}, p.Path...)
 	if len(p.Extra) > 0 {

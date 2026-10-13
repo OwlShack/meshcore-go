@@ -449,3 +449,168 @@ func TestTxEngine_Stats_SentByRouteAndAirtime(t *testing.T) {
 		t.Fatalf("SentFlood/SentDirect/AirtimeMs = %d/%d/%d, want 1/2/30", st.SentFlood, st.SentDirect, st.AirtimeMs)
 	}
 }
+
+type txResult struct {
+	data []byte
+	err  error
+}
+
+type txResults struct {
+	mu  sync.Mutex
+	got []txResult
+}
+
+func (r *txResults) add(data []byte, err error) {
+	r.mu.Lock()
+	r.got = append(r.got, txResult{data, err})
+	r.mu.Unlock()
+}
+
+// wait returns the results once n have arrived and a further pause has brought no more.
+func (r *txResults) wait(t *testing.T, n int) []txResult {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		r.mu.Lock()
+		have := len(r.got)
+		r.mu.Unlock()
+		if have >= n || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(4 * queuedRadioTickInterval)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.got) != n {
+		t.Fatalf("got %d results %v, want %d", len(r.got), r.got, n)
+	}
+	return append([]txResult(nil), r.got...)
+}
+
+type failingModem struct {
+	mockModem
+	fail byte
+	err  error
+}
+
+func (m *failingModem) SendData(data []byte) error {
+	if data[0] == m.fail {
+		return m.err
+	}
+	return m.mockModem.SendData(data)
+}
+
+func TestMux_TxResultPerPacket(t *testing.T) {
+	boom := errors.New("serial write failed")
+	modem := &failingModem{fail: 0x02, err: boom}
+	var res txResults
+	mux := NewRadioMux(modem, WithMuxTxResult(res.add))
+	defer mux.Stop()
+	radio := mux.NewRadio()
+
+	_ = radio.SendData([]byte{0x01})
+	_ = radio.SendData([]byte{0x02})
+	got := res.wait(t, 2)
+
+	if got[0].data[0] == got[1].data[0] {
+		t.Fatalf("one packet reported twice: %v", got)
+	}
+	for _, r := range got {
+		if want := map[byte]error{0x01: nil, 0x02: boom}[r.data[0]]; r.err != want {
+			t.Errorf("packet %02x reported %v, want %v", r.data[0], r.err, want)
+		}
+	}
+}
+
+func TestNode_WithTxResult(t *testing.T) {
+	var res txResults
+	n := New(seedIdentity(0xD7), &mockRadio{}, WithTxResult(res.add))
+	defer n.Stop()
+
+	pkt, err := meshcore.PacketFromBytes(makeFloodPacket(meshcore.PayloadTypeGrpTxt, []byte{1, 2, 3, 4}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := n.SendPacket(pkt); err != nil {
+		t.Fatal(err)
+	}
+	if got := res.wait(t, 1); got[0].err != nil {
+		t.Fatalf("result = %v, want nil", got[0].err)
+	}
+}
+
+func TestTxEngine_TxResultQueueFull(t *testing.T) {
+	done := make(chan struct{})
+	defer close(done)
+	var res txResults
+	tx := newTxEngine(func([]byte) error { return nil }, done, withTxMaxQueue(1), withTxResult(res.add))
+
+	tx.enqueue([]byte{0x01}, 0, time.Hour)
+	if tx.enqueue([]byte{0x02}, 0, time.Hour) {
+		t.Fatal("enqueue into a full queue succeeded")
+	}
+	got := res.wait(t, 1)
+	if got[0].data[0] != 0x02 || !errors.Is(got[0].err, ErrTxQueueFull) {
+		t.Fatalf("result = %v, want packet 02 with ErrTxQueueFull", got[0])
+	}
+}
+
+func TestTxEngine_TxResultBusyRequeuedThenSent(t *testing.T) {
+	done := make(chan struct{})
+	defer close(done)
+	var res txResults
+	var calls atomic.Int32
+	tx := newTxEngine(func([]byte) error {
+		if calls.Add(1) == 1 {
+			return hardware.ErrTxPending
+		}
+		return nil
+	}, done, withTxResult(res.add))
+
+	tx.enqueue([]byte{0x01}, 0, 0)
+	if got := res.wait(t, 1); got[0].err != nil {
+		t.Fatalf("requeued then sent packet reported %v, want one nil", got[0].err)
+	}
+}
+
+func TestTxEngine_TxResultBusyDropped(t *testing.T) {
+	done := make(chan struct{})
+	defer close(done)
+	var res txResults
+	var tx *txEngine
+	tx = newTxEngine(func([]byte) error {
+		tx.enqueue([]byte{0x02}, 0, time.Hour)
+		return hardware.ErrTxPending
+	}, done, withTxMaxQueue(1), withTxResult(res.add))
+
+	tx.enqueue([]byte{0x01}, 0, 0)
+	got := res.wait(t, 1)
+	if got[0].data[0] != 0x01 || !errors.Is(got[0].err, ErrTxBusyDropped) || !errors.Is(got[0].err, hardware.ErrTxPending) {
+		t.Fatalf("result = %v, want packet 01 with ErrTxBusyDropped wrapping ErrTxPending", got[0])
+	}
+}
+
+func TestTxEngine_TxResultStopped(t *testing.T) {
+	done := make(chan struct{})
+	var res txResults
+	tx := newTxEngine(func([]byte) error { return nil }, done, withTxResult(res.add))
+
+	for i := range 3 {
+		tx.enqueue([]byte{byte(i)}, 0, time.Hour)
+	}
+	close(done)
+	res.wait(t, 3)
+	tx.enqueue([]byte{3}, 0, 0)
+
+	seen := map[byte]bool{}
+	for _, r := range res.wait(t, 4) {
+		if seen[r.data[0]] || !errors.Is(r.err, ErrTxStopped) {
+			t.Fatalf("result %v: want each packet once with ErrTxStopped", r)
+		}
+		seen[r.data[0]] = true
+	}
+	if tx.queueLen() != 0 {
+		t.Fatalf("queueLen = %d after stop, want 0", tx.queueLen())
+	}
+}

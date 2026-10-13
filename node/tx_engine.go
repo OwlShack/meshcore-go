@@ -2,6 +2,7 @@ package node
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,16 @@ import (
 const queuedRadioTickInterval = 50 * time.Millisecond
 
 const txBusyBackoff = 200 * time.Millisecond
+
+var (
+	// ErrTxBusyDropped wraps the busy error of a packet dropped because the queue was full when it came to retry.
+	ErrTxBusyDropped = errors.New("transmit busy, packet dropped")
+	// ErrTxStopped reports a packet still queued, or enqueued, once the transmit engine has stopped.
+	ErrTxStopped = errors.New("transmit engine stopped")
+)
+
+// TxResultFunc gets each packet's outcome once, nil when sent; it runs on the TX goroutine (the enqueuer's when rejected), outside the queue lock, and must not block.
+type TxResultFunc func(data []byte, err error)
 
 // TxStats holds runtime counters reported by txEngine.Stats.
 type TxStats struct {
@@ -41,7 +52,9 @@ type txEngine struct {
 	retryable  func(error) bool
 	log        *slog.Logger
 	errH       func(error)
+	result     TxResultFunc
 	done       chan struct{}
+	stopped    bool
 
 	statSent          atomic.Uint64
 	statBusyRequeued  atomic.Uint64
@@ -58,6 +71,7 @@ type txEngineConfig struct {
 	maxQueue  int
 	log       *slog.Logger
 	errH      func(error)
+	result    TxResultFunc
 	budget    *airtimeBudget
 	retryable func(error) bool
 }
@@ -79,6 +93,12 @@ func withTxLogger(l *slog.Logger) txEngineOption {
 func withTxErrorHandler(h func(error)) txEngineOption {
 	return func(c *txEngineConfig) {
 		c.errH = h
+	}
+}
+
+func withTxResult(f TxResultFunc) txEngineOption {
+	return func(c *txEngineConfig) {
+		c.result = f
 	}
 }
 
@@ -113,6 +133,7 @@ func newTxEngine(sendFn func([]byte) error, done chan struct{}, opts ...txEngine
 		retryable: cfg.retryable,
 		log:       cfg.log,
 		errH:      cfg.errH,
+		result:    cfg.result,
 		done:      done,
 	}
 	go e.loop()
@@ -121,12 +142,34 @@ func newTxEngine(sendFn func([]byte) error, done chan struct{}, opts ...txEngine
 
 func (e *txEngine) enqueue(data []byte, priority uint8, delay time.Duration) bool {
 	e.mu.Lock()
-	ok := e.queue.add(data, priority, time.Now().Add(delay))
+	stopped := e.stopped
+	ok := stopped || e.queue.add(data, priority, time.Now().Add(delay))
 	e.mu.Unlock()
-	if !ok {
+	switch {
+	case stopped:
+		e.report(data, ErrTxStopped)
+	case !ok:
 		e.statQueueRejected.Add(1)
+		e.report(data, ErrTxQueueFull)
 	}
 	return ok
+}
+
+func (e *txEngine) report(data []byte, err error) {
+	if e.result != nil {
+		e.result(data, err)
+	}
+}
+
+func (e *txEngine) stop() {
+	e.mu.Lock()
+	e.stopped = true
+	left := e.queue.entries
+	e.queue.entries = nil
+	e.mu.Unlock()
+	for _, entry := range left {
+		e.report(entry.data, ErrTxStopped)
+	}
 }
 
 func (e *txEngine) stats() TxStats {
@@ -163,6 +206,7 @@ func (e *txEngine) loop() {
 	for {
 		select {
 		case <-e.done:
+			e.stop()
 			return
 		case <-ticker.C:
 			e.drain()
@@ -224,10 +268,12 @@ func (e *txEngine) drain() {
 				} else {
 					e.statBusyDropped.Add(1)
 					e.log.Warn("tx busy, queue full, dropping packet", "error", err, "data_len", len(popped.data))
+					e.report(popped.data, fmt.Errorf("%w: %w", ErrTxBusyDropped, err))
 				}
 			} else {
 				e.statFailed.Add(1)
 				e.log.Warn("tx failed, dropping packet", "error", err, "data_len", len(popped.data))
+				e.report(popped.data, err)
 			}
 			if e.errH != nil {
 				e.errH(err)
@@ -255,5 +301,6 @@ func (e *txEngine) drain() {
 			}
 			e.mu.Unlock()
 		}
+		e.report(popped.data, nil)
 	}
 }

@@ -13,6 +13,8 @@ meshcore-go/
     frame.go                  # 0x3c/0x3e framing + streaming FrameParser
     commands.go               # Command encoders (ToBytes)
     responses.go              # Response and push parsers (ParseResponse)
+    command_parse.go          # Device side: command parsers (ParseCommand), CommandError
+    response_encode.go        # Device side: response and push encoders (ToBytes)
     client/
       client.go               # Client: typed methods for every command, push handlers
       modem.go                # CompanionModem: adapts Client to node.Modem
@@ -228,6 +230,8 @@ SNR on the wire is quarter-dB; `SNRFromWire` and `PathSNRdB` convert to real dB.
 ### Companion protocol (`companion`)
 
 59 commands, 30 responses, 17 pushes. `ParseResponse` dispatches through a code-to-parser table; unknown codes come back with the raw payload. Path-length bytes in advert-path, path-discovery and trace frames are decoded with the firmware's hash-size encoding, and signed plain text exposes the sender prefix separately from the text.
+
+The device side mirrors it, for a program that acts as the companion an app connects to. `ParseCommand` decodes an app's frame into the same command structs, and every response and push struct has `ToBytes`, laid out byte for byte as the firmware writes it (no frame header; `FrameEncode` adds it). A frame the firmware would refuse on its shape alone comes back as a `*CommandError` carrying the firmware's error code, so the reply is `ErrResponse{ErrorCode: ce.ErrCode, HasErrorCode: true}`. Checks that need device state (contacts, channels, clock, board limits) stay with the caller. Optional trailing fields have `Has*` flags, so an absent field is not read as zero.
 
 ### Client (`companion/client`)
 

@@ -401,6 +401,7 @@ func lppDataInfo(t byte) (size int, mult float32, signed bool) {
 }
 
 // appendLPPData appends v big-endian; like the firmware, an unsigned type keeps only a negative value's magnitude.
+// Signed values over 4 bytes are full two's complement, as firmware's putFloat and getFloat are undefined there and differ by chip.
 func appendLPPData(b []byte, t byte, v float64) []byte {
 	size, mult, signed := lppDataInfo(t)
 	f := float32(v)
