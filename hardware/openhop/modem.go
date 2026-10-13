@@ -1065,21 +1065,11 @@ func (m *Modem) LastSignal() (rssi int, snr float64, signalRSSI int) {
 }
 
 // EstAirtime returns the time on air in milliseconds for a packet under the
-// current radio config, or 0 when none is set; node.RadioMux reads it itself.
+// current radio config and its preamble, or 0 when none is set; node.RadioMux reads it itself.
 func (m *Modem) EstAirtime(packetLen int) uint32 {
 	cfg := m.RadioConfig()
-	if cfg.SF == 0 || cfg.BandwidthHz == 0 {
-		return 0
-	}
-	base := hardware.LoRaAirtimeEstimator(&hardware.RadioConfig{
-		FreqHz: cfg.FreqHz, BwHz: cfg.BandwidthHz, SF: cfg.SF, CR: cfg.CR,
-	})(packetLen)
-	// The shared estimator assumes the MeshCore firmware's own preamble, which
-	// this modem takes from its configuration instead.
-	assumed := float64(hardware.PreambleForSF(cfg.SF))
-	symbolMs := math.Exp2(float64(cfg.SF)) / float64(cfg.BandwidthHz) * 1000
-	ms := math.Ceil(float64(base) + (float64(cfg.PreambleLen)-assumed)*symbolMs)
-	return uint32(max(ms, 1))
+	rc := &hardware.RadioConfig{FreqHz: cfg.FreqHz, BwHz: cfg.BandwidthHz, SF: cfg.SF, CR: cfg.CR}
+	return hardware.LoRaTimeOnAirMicros(rc, uint16(cfg.PreambleLen), packetLen) / 1000
 }
 
 // AirtimeEstimator returns the time-on-air estimator for the radio config.
