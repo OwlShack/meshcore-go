@@ -23,11 +23,19 @@ func TestMultiPartFromBytes(t *testing.T) {
 			wantWrappedPayload: "DEADBEEFCAFEBABE",
 		},
 		{
-			name:               "valid with no wrapped payload",
-			hex:                "15",
-			wantRemaining:      1,
-			wantWrappedType:    0x05,
-			wantWrappedPayload: "",
+			name:    "no wrapped payload",
+			hex:     "15",
+			wantErr: true,
+		},
+		{
+			name:    "two bytes",
+			hex:     "1500",
+			wantErr: true,
+		},
+		{
+			name:    "ACK shorter than its CRC",
+			hex:     "23DEADBE",
+			wantErr: true,
 		},
 		{
 			name:               "remaining at max, type 0",
@@ -49,11 +57,9 @@ func TestMultiPartFromBytes(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:               "single header byte only",
-			hex:                "42",
-			wantRemaining:      4,
-			wantWrappedType:    0x02,
-			wantWrappedPayload: "",
+			name:    "single header byte only",
+			hex:     "42",
+			wantErr: true,
 		},
 	}
 
@@ -156,6 +162,13 @@ func TestMultiPartToBytes(t *testing.T) {
 	}
 }
 
+func TestMultiPartToBytesRejectsRemainingOver15(t *testing.T) {
+	mp := MultiPart{Remaining: 16, WrappedType: PayloadTypeAck, WrappedPayload: []byte{1, 2, 3, 4}}
+	if _, err := mp.ToBytes(); err == nil {
+		t.Fatal("ToBytes accepted Remaining 16, which wraps to 0 in the 4-bit field")
+	}
+}
+
 func TestMultiPartRoundTrip(t *testing.T) {
 	tests := []struct {
 		name string
@@ -170,11 +183,11 @@ func TestMultiPartRoundTrip(t *testing.T) {
 			},
 		},
 		{
-			name: "empty payload",
+			name: "short payload",
 			mp: MultiPart{
 				Remaining:      5,
 				WrappedType:    0x0A,
-				WrappedPayload: []byte{},
+				WrappedPayload: []byte{0x01, 0x02},
 			},
 		},
 		{

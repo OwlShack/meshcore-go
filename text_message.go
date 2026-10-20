@@ -135,6 +135,9 @@ func BuildTextAck(plaintext []byte, senderPubKey []byte, random byte) []byte {
 }
 
 func NewTextMessage(self LocalIdentity, peer Identity, plaintext []byte, sharedSecret []byte) (*TextMessage, error) {
+	if err := checkPlaintextLen(plaintext, CipherMACSize); err != nil {
+		return nil, err
+	}
 	encrypted, err := EncryptThenMAC(sharedSecret, plaintext)
 	if err != nil {
 		return nil, err

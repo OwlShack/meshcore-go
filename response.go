@@ -36,7 +36,7 @@ func (r *Response) Decrypt(sharedSecret []byte) []byte {
 
 // NewResponse encrypts plaintext into a RESPONSE payload from self to peer.
 func NewResponse(self LocalIdentity, peer Identity, plaintext []byte, sharedSecret []byte) (*Response, error) {
-	mac, enc, err := macEncrypt(sharedSecret, plaintext)
+	mac, enc, err := macEncrypt(sharedSecret, plaintext, CipherMACSize)
 	if err != nil {
 		return nil, err
 	}

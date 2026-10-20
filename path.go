@@ -106,7 +106,7 @@ func (p *PathPayload) ToBytes() ([]byte, error) {
 
 // NewPath encrypts plaintext into a PATH payload from self to peer.
 func NewPath(self LocalIdentity, peer Identity, plaintext []byte, sharedSecret []byte) (*Path, error) {
-	mac, enc, err := macEncrypt(sharedSecret, plaintext)
+	mac, enc, err := macEncrypt(sharedSecret, plaintext, CipherMACSize)
 	if err != nil {
 		return nil, err
 	}
