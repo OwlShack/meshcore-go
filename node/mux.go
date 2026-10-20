@@ -234,6 +234,13 @@ func (m *RadioMux) enqueue(data []byte, priority uint8, delay time.Duration) boo
 	return m.tx.enqueue(data, priority, delay)
 }
 
+// SetAirtimeFactor changes the TX airtime budget factor of a running mux.
+func (m *RadioMux) SetAirtimeFactor(factor float64) {
+	if m.tx.budget != nil {
+		m.tx.budget.setFactor(factor)
+	}
+}
+
 // TxQueueLen returns how many packets wait to transmit, the firmware's getOutboundTotal.
 func (m *RadioMux) TxQueueLen() int {
 	return m.tx.queueLen()

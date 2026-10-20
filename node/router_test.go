@@ -832,3 +832,19 @@ func TestRouter_TraceEndAndZeroHopControlNotDeduped(t *testing.T) {
 		}
 	}
 }
+
+func TestRouter_FloodRelayStopsAt63Hops(t *testing.T) {
+	for hops, want := range map[int]int{62: 1, 63: 0} {
+		sends := 0
+		r := newTestRouter(testRouterOpts{
+			identity:     seedIdentity(0x01),
+			allowForward: func(*meshcore.Packet) bool { return true },
+			send:         func([]byte, uint8) error { sends++; return nil },
+		})
+		data := makePacketWithPath(meshcore.RouteTypeFlood, meshcore.PayloadTypeGrpTxt, byte(hops), bytes.Repeat([]byte{0x77}, hops), []byte{1, 2, 3, 4})
+		routeThenRelay(r, mustPacketFromBytes(t, data))
+		if sends != want {
+			t.Errorf("%d hops: sends = %d, want %d", hops, sends, want)
+		}
+	}
+}

@@ -134,6 +134,11 @@ func (rm *RegionMap) FindFloodMatch(pkt *meshcore.Packet) *meshcore.Region {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
 
+	// Transport code 0 is unscoped, with no deny check.
+	if pkt.IsTransport() && pkt.TransportCode1 == 0 {
+		w := rm.wildcard
+		return &w
+	}
 	if pkt.IsTransport() {
 		for _, r := range rm.regions {
 			if r.Flags&meshcore.RegionDenyFlood != 0 {

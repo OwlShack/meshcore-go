@@ -1,6 +1,8 @@
 package node
 
 import (
+	"math"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,7 +28,7 @@ type airtimeBudget struct {
 	txBudgetMs     float64
 	lastUpdate     time.Time
 	windowMs       float64
-	airtimeFactor  float64
+	factorBits     atomic.Uint64
 	estimator      AirtimeEstimator
 	totalAirtimeMs uint64
 }
@@ -34,17 +36,23 @@ type airtimeBudget struct {
 func newAirtimeBudget(factor float64, window time.Duration, estimator AirtimeEstimator) *airtimeBudget {
 	wMs := float64(window.Milliseconds())
 	dc := 1.0 / (1.0 + factor)
-	return &airtimeBudget{
-		txBudgetMs:    wMs * dc,
-		lastUpdate:    time.Now(),
-		windowMs:      wMs,
-		airtimeFactor: factor,
-		estimator:     estimator,
+	b := &airtimeBudget{
+		txBudgetMs: wMs * dc,
+		lastUpdate: time.Now(),
+		windowMs:   wMs,
+		estimator:  estimator,
 	}
+	b.setFactor(factor)
+	return b
+}
+
+// setFactor changes the airtime factor used from the next budget update.
+func (b *airtimeBudget) setFactor(factor float64) {
+	b.factorBits.Store(math.Float64bits(factor))
 }
 
 func (b *airtimeBudget) dutyCycle() float64 {
-	return 1.0 / (1.0 + b.airtimeFactor)
+	return 1.0 / (1.0 + math.Float64frombits(b.factorBits.Load()))
 }
 
 func (b *airtimeBudget) maxBudgetMs() float64 {

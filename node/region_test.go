@@ -282,6 +282,22 @@ func TestFindFloodMatch_TransportPacketIgnoresWildcard(t *testing.T) {
 	}
 }
 
+func TestFindFloodMatch_TransportCodeZeroIsWildcard(t *testing.T) {
+	rm := NewRegionMap()
+	rm.SetWildcardFlags(meshcore.RegionDenyFlood)
+	rm.Add(testRegion("au"))
+	rm.SetDefault("au")
+	pkt := makeTransportFloodPacket(testRegion("unknown"), []byte{0x01})
+	pkt.TransportCode1 = 0
+
+	if got := rm.FindFloodMatch(pkt); !rm.IsWildcard(got) {
+		t.Fatalf("FindFloodMatch() = %v, want the wildcard", got)
+	}
+	if got := rm.ReplyScope(pkt); got != nil {
+		t.Errorf("ReplyScope() = %v, want nil (unscoped)", got)
+	}
+}
+
 func TestFindFloodMatch_DenyDirectDoesNotBlockFlood(t *testing.T) {
 	rm := NewRegionMap()
 	r := testRegion("direct-only-deny")
@@ -494,6 +510,15 @@ func TestRegionMap_ReplyScope(t *testing.T) {
 	}
 }
 
+func TestWithoutFloodRegionGate(t *testing.T) {
+	if New(seedIdentity(0x01), &mockTxRadio{}).noRegionGate {
+		t.Error("region gate off by default, want on")
+	}
+	if !New(seedIdentity(0x01), &mockTxRadio{}, WithoutFloodRegionGate()).noRegionGate {
+		t.Error("WithoutFloodRegionGate left the region gate on")
+	}
+}
+
 func TestRouter_FloodRelayNeedsRegion(t *testing.T) {
 	nz := meshcore.NewRegion("nz")
 	payload := []byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE}
@@ -501,12 +526,15 @@ func TestRouter_FloodRelayNeedsRegion(t *testing.T) {
 		name         string
 		pkt          *meshcore.Packet
 		denyWildcard bool
+		noGate       bool
 		relay        bool
 	}{
-		{"known scope relayed", makeTransportFloodPacket(nz, payload), false, true},
-		{"unknown scope dropped", makeTransportFloodPacket(meshcore.NewRegion("fr"), payload), false, false},
-		{"unscoped relayed by default", makeNonTransportFloodPacket(payload), false, true},
-		{"unscoped dropped when wildcard denies flood", makeNonTransportFloodPacket(payload), true, false},
+		{"known scope relayed", makeTransportFloodPacket(nz, payload), false, false, true},
+		{"unknown scope dropped", makeTransportFloodPacket(meshcore.NewRegion("fr"), payload), false, false, false},
+		{"unscoped relayed by default", makeNonTransportFloodPacket(payload), false, false, true},
+		{"unscoped dropped when wildcard denies flood", makeNonTransportFloodPacket(payload), true, false, false},
+		{"unknown scope relayed without the gate", makeTransportFloodPacket(meshcore.NewRegion("fr"), payload), false, true, true},
+		{"unscoped relayed without the gate when wildcard denies flood", makeNonTransportFloodPacket(payload), true, true, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -519,6 +547,7 @@ func TestRouter_FloodRelayNeedsRegion(t *testing.T) {
 					return nil
 				},
 			})
+			r.node.noRegionGate = c.noGate
 			r.node.regions.Add(nz)
 			if c.denyWildcard {
 				r.node.regions.SetWildcardFlags(meshcore.RegionDenyFlood)
@@ -530,8 +559,8 @@ func TestRouter_FloodRelayNeedsRegion(t *testing.T) {
 			}
 			if c.relay && c.pkt.IsTransport() {
 				out := mustPacketFromBytes(t, sent[0])
-				if !nz.MatchesPacket(out) {
-					t.Errorf("relayed code = %04x, want the region's code kept", out.TransportCode1)
+				if out.TransportCode1 != c.pkt.TransportCode1 {
+					t.Errorf("relayed code = %04x, want %04x kept", out.TransportCode1, c.pkt.TransportCode1)
 				}
 			}
 		})

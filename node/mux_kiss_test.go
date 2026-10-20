@@ -87,7 +87,7 @@ func TestMuxNodeKeepsTimingEstimator(t *testing.T) {
 	var received uint32
 	n := New(seedIdentity(1), mux.NewRadio(), WithAirtimeEstimator(est), WithFloodRetransmitDelay(func(_ int, airtime uint32) time.Duration { received = airtime; return 0 }))
 	defer n.Stop()
-	n.router.floodDelay(20)
+	n.router.floodDelay(floodRelayPacket())
 	if received != 125 {
 		t.Fatalf("node airtime=%d want125 with mux", received)
 	}
@@ -106,7 +106,7 @@ func TestMuxAndNodeReadModemAirtime(t *testing.T) {
 	var received uint32
 	n := New(seedIdentity(1), mux.NewRadio(), WithFloodRetransmitDelay(func(_ int, airtime uint32) time.Duration { received = airtime; return 0 }))
 	defer n.Stop()
-	n.router.floodDelay(20)
+	n.router.floodDelay(floodRelayPacket())
 	if received != 90 {
 		t.Fatalf("node airtime = %d, want the modem's 90", received)
 	}
@@ -118,7 +118,7 @@ func TestMuxAndNodeReadModemAirtime(t *testing.T) {
 	defer over.Stop()
 	n2 := New(seedIdentity(2), over.NewRadio(), WithFloodRetransmitDelay(func(_ int, airtime uint32) time.Duration { received = airtime; return 0 }))
 	defer n2.Stop()
-	n2.router.floodDelay(20)
+	n2.router.floodDelay(floodRelayPacket())
 	if received != 7 {
 		t.Fatalf("node airtime = %d, want the mux override 7", received)
 	}
@@ -131,8 +131,8 @@ func TestNodeWarnsOnceWithoutAirtime(t *testing.T) {
 	defer mux.Stop()
 	n := New(seedIdentity(1), mux.NewRadio(), WithLogger(log))
 	defer n.Stop()
-	n.router.floodDelay(20)
-	n.router.floodDelay(20)
+	n.router.floodDelay(floodRelayPacket())
+	n.router.floodDelay(floodRelayPacket())
 	if got := strings.Count(buf.String(), "no airtime estimate"); got != 1 {
 		t.Fatalf("warned %d times:\n%s", got, buf.String())
 	}
@@ -141,7 +141,7 @@ func TestNodeWarnsOnceWithoutAirtime(t *testing.T) {
 	defer mux3.Stop()
 	n3 := New(seedIdentity(3), mux3.NewRadio(), WithLogger(log))
 	defer n3.Stop()
-	n3.router.floodDelay(20)
+	n3.router.floodDelay(floodRelayPacket())
 	if buf.Len() != 0 {
 		t.Fatalf("warned with an estimate:\n%s", buf.String())
 	}
