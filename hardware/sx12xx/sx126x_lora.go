@@ -3,6 +3,7 @@ package sx12xx
 import (
 	"errors"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -109,25 +110,34 @@ func (d *SX126x) SetFrequency(hz uint32) error {
 	return nil
 }
 
-// imageCalBand returns the CalImg* band-edge bytes for the band containing hz.
+// imageCalBand returns the CalImg* band-edge bytes for the band containing hz, or for hz +/- 4 MHz outside them.
 func imageCalBand(hz uint32) (byte, byte) {
-	mhz := hz / 1_000_000
-	switch {
-	case mhz < 446:
-		return CalImg430, CalImg440
-	case mhz < 734:
-		return CalImg470, CalImg510
-	case mhz < 828:
-		return CalImg779, CalImg787
-	case mhz < 877:
-		return CalImg863, CalImg870
-	default:
+	f := float32(hz) / 1e6
+	switch mhz := int(f); {
+	case mhz >= 902 && mhz <= 928:
 		return CalImg902, CalImg928
+	case mhz >= 863 && mhz <= 870:
+		return CalImg863, CalImg870
+	case mhz >= 779 && mhz <= 787:
+		return CalImg779, CalImg787
+	case mhz >= 470 && mhz <= 510:
+		return CalImg470, CalImg510
+	case mhz >= 430 && mhz <= 440:
+		return CalImg430, CalImg440
 	}
+	lo := byte(math.Floor(float64((f - 4 - 1) / 4)))
+	hi := byte(math.Ceil(float64((f + 4 + 1) / 4)))
+	if lo%2 == 0 {
+		lo--
+	}
+	if hi%2 == 0 {
+		hi++
+	}
+	return lo, hi
 }
 
 // SetTxPower sets the output power in dBm (clamped to -9..22) for the
-// SX1262/SX1268 high-power PA; the SX1261 low-power PA is not supported.
+// SX1262/SX1268 high-power PA (see Opts.SX1268); the SX1261 low-power PA is not supported.
 func (d *SX126x) SetTxPower(dBm int) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -140,12 +150,19 @@ func (d *SX126x) SetTxPower(dBm int) error {
 	}
 
 	pa := paOptTable[dBm+9]
+	if d.opts.SX1268 {
+		pa = paOptTableSX1268[dBm+9]
+	}
 	if err := d.command(opSetPaConfig, pa.dutyCycle, pa.hpMax, PADeviceSX1262, PALutDefault); err != nil {
 		return err
 	}
 
-	// Over-current protection: 140 mA for the high-power PA, set after SetPaConfig.
-	if err := d.writeRegister(regOCPConfiguration, []byte{0x38}); err != nil {
+	// Over-current protection in 2.5 mA steps, set after SetPaConfig, which resets it.
+	ocp := 140.0
+	if d.opts.CurrentLimit > 0 {
+		ocp = min(d.opts.CurrentLimit, 140)
+	}
+	if err := d.writeRegister(regOCPConfiguration, []byte{byte(ocp / 2.5)}); err != nil {
 		return err
 	}
 
@@ -173,6 +190,21 @@ var paOptTable = [32]struct {
 	{2, 2, 21}, {3, 2, 21}, {1, 4, 19}, {1, 4, 20},
 	{3, 3, 20}, {2, 5, 19}, {1, 6, 22}, {2, 5, 22},
 	{3, 5, 22}, {3, 6, 22}, {4, 6, 22}, {4, 7, 22},
+}
+
+// paOptTableSX1268 is the measured SX1268 table, laid out as paOptTable.
+var paOptTableSX1268 = [32]struct {
+	dutyCycle, hpMax byte
+	paVal            int8
+}{
+	{2, 1, -3}, {2, 1, -2}, {1, 1, 0}, {4, 1, -1},
+	{2, 1, 2}, {2, 2, 0}, {2, 2, 1}, {1, 2, 3},
+	{1, 3, 3}, {1, 2, 5}, {1, 1, 9}, {4, 1, 8},
+	{2, 2, 7}, {1, 1, 13}, {4, 1, 11}, {1, 1, 19},
+	{2, 1, 19}, {4, 1, 17}, {1, 6, 12}, {1, 2, 16},
+	{4, 1, 22}, {2, 2, 18}, {1, 2, 21}, {2, 2, 21},
+	{3, 2, 21}, {2, 3, 20}, {1, 6, 20}, {1, 5, 22},
+	{2, 5, 22}, {3, 5, 22}, {3, 7, 22}, {4, 7, 22},
 }
 
 // SetModulationParams configures the LoRa spreading factor sf (5..12),

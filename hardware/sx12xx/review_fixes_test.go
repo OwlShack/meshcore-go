@@ -135,6 +135,64 @@ func TestTxPowerMatchesRadioLibsMeasuredTable(t *testing.T) {
 	}
 }
 
+func TestTxPowerUsesTheSX1268Table(t *testing.T) {
+	for _, tc := range []struct {
+		dBm                     int
+		dutyCycle, hpMax, paVal byte
+	}{
+		{8, 4, 1, 17},
+		{20, 3, 5, 22},
+	} {
+		chip := &fakeChip{}
+		d := newTestSX126x(chip, 1)
+		d.stop = nil
+		d.opts.SX1268 = true
+		if err := d.SetTxPower(tc.dBm); err != nil {
+			t.Fatalf("SetTxPower(%d): %v", tc.dBm, err)
+		}
+		var got [3]byte
+		for _, c := range chip.calls {
+			switch c[0] {
+			case opSetPaConfig:
+				got[0], got[1] = c[1], c[2]
+			case opSetTxParams:
+				got[2] = c[1]
+			}
+		}
+		if got != [3]byte{tc.dutyCycle, tc.hpMax, tc.paVal} {
+			t.Errorf("%d dBm: dutyCycle/hpMax/paVal = %v, want %d/%d/%d", tc.dBm, got, tc.dutyCycle, tc.hpMax, tc.paVal)
+		}
+	}
+}
+
+func TestTxPowerAppliesTheCurrentLimit(t *testing.T) {
+	for _, tc := range []struct {
+		limit float64
+		want  byte
+	}{
+		{0, 0x38}, // 140 mA
+		{130, 52},
+		{200, 0x38},
+	} {
+		chip := &fakeChip{}
+		d := newTestSX126x(chip, 1)
+		d.stop = nil
+		d.opts.CurrentLimit = tc.limit
+		if err := d.SetTxPower(14); err != nil {
+			t.Fatal(err)
+		}
+		got := -1
+		for _, c := range chip.calls {
+			if c[0] == opWriteRegister && uint16(c[1])<<8|uint16(c[2]) == regOCPConfiguration {
+				got = int(c[3])
+			}
+		}
+		if got != int(tc.want) {
+			t.Errorf("CurrentLimit %v: OCP register = %d, want %d", tc.limit, got, tc.want)
+		}
+	}
+}
+
 func TestTxPowerClampsToTheTable(t *testing.T) {
 	for _, dBm := range []int{-100, -9, 22, 100} {
 		chip := &fakeChip{}

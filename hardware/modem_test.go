@@ -202,6 +202,24 @@ func TestModem_SignalReportEnabled_StaleFlush(t *testing.T) {
 	}
 }
 
+func TestModem_SignalReportEnabled_OtherFrameFlushesPending(t *testing.T) {
+	mt := newMockTransport()
+	modem := NewKissModem(mt, WithSignalReport(true))
+	var received []*KissFrame
+	modem.SetFrameHandler(func(f *KissFrame) { received = append(received, f) })
+
+	mt.injectFrame(makeDataFrame([]byte{0x01}))
+	mt.injectFrame(makeHwRespFrame(HW_RESP_TX_DONE, 0x01))
+	modem.Flush()
+
+	if len(received) != 2 || received[0].Command != KISS_CMD_DATA || received[1].Command != KISS_CMD_SETHARDWARE {
+		t.Fatalf("got %d frames, want the data frame then TX_DONE", len(received))
+	}
+	if received[0].HasSignalInfo {
+		t.Error("data frame flushed early should carry no signal info")
+	}
+}
+
 func TestModem_SignalReportEnabled_Timeout(t *testing.T) {
 	mt := newMockTransport()
 	modem := NewKissModem(mt, WithSignalReport(true))
@@ -1068,6 +1086,34 @@ func TestRequest_IgnoresAnUnsolicitedTxBusyError(t *testing.T) {
 	}
 }
 
+func TestRequest_ResyncsAfterTxBusyDroppedAReply(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reply *KissFrame
+		call  func(*KissModem, context.Context) error
+		want  error
+	}{
+		{"OK", makeHwRespFrame(HW_RESP_OK),
+			func(m *KissModem, ctx context.Context) error { return m.SetTxPowerWait(ctx, 10) }, nil},
+		{"ERROR", makeHwRespFrame(HW_RESP_ERROR, HW_ERR_NO_CALLBACK),
+			func(m *KissModem, ctx context.Context) error { _, err := m.MCUTemp(ctx); return err }, ErrHwRequestFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, mt := connectedModem(t)
+			replyOnSend(mt, makeHwRespFrame(HW_RESP_ERROR, HW_ERR_TX_BUSY))
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+			defer cancel()
+			if _, err := m.Battery(ctx); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("Battery with its reply dropped = %v, want DeadlineExceeded", err)
+			}
+			replyOnSend(mt, tc.reply)
+			if err := tc.call(m, shortCtx(t)); !errors.Is(err, tc.want) {
+				t.Fatalf("after a dropped reply = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
 // TestRequest_AdoptsAReplyDispatchedAfterTheNextRequestArms pins a deliberate
 // trade-off, not a desirable behaviour. Suppressing this adoption needs a mark
 // on the response code, and such a mark is never cleared when the reply is
@@ -1169,6 +1215,25 @@ func TestWaitingSetters_CompleteOnTheirReply(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestSetRadio_SendsCodingRateAsDenominator(t *testing.T) {
+	m, mt := connectedModem(t)
+	if err := m.SetRadio(&RadioConfig{SF: 11, CR: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if cr := lastSent(t, mt).Data[10]; cr != 5 {
+		t.Errorf("SetRadio CR 1 sent %d, want 5", cr)
+	}
+	mt.injectFrame(makeHwRespFrame(HW_RESP_OK))
+	m.Flush()
+	replyOnSend(mt, makeHwRespFrame(HW_RESP_OK))
+	if err := m.SetRadioWait(shortCtx(t), &RadioConfig{SF: 11, CR: 4}); err != nil {
+		t.Fatal(err)
+	}
+	if cr := lastSent(t, mt).Data[10]; cr != 8 {
+		t.Errorf("SetRadioWait CR 4 sent %d, want 8", cr)
 	}
 }
 

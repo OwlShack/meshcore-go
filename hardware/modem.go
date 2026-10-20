@@ -136,7 +136,6 @@ type ModemStats struct {
 type KissModem struct {
 	radioCfg     atomic.Pointer[RadioConfig]
 	transport    Transport
-	kissPort     int
 	signalReport bool
 	inboundSize  int
 	log          *slog.Logger
@@ -191,6 +190,7 @@ type KissModem struct {
 	hwWaiter   *hwWait
 	hwSent     uint64 // hardware commands sent; the firmware answers each once, in order
 	hwAnswered uint64
+	hwStale    bool // a TX_BUSY may have dropped replies, so hwAnswered can lag
 	dataMu     sync.RWMutex
 	dataH      DataFrameHandler
 
@@ -308,6 +308,7 @@ func (m *KissModem) Connect(ctx context.Context) error {
 	m.releaseTx()
 	m.hwWaitMu.Lock()
 	m.hwAnswered = m.hwSent
+	m.hwStale = false
 	m.hwWaitMu.Unlock()
 	m.signalMu.Lock()
 	defer m.signalMu.Unlock()
@@ -445,21 +446,22 @@ func (m *KissModem) requestFor(ctx context.Context, cmd byte, payload []byte, wa
 }
 
 // completeHwRequest counts each answer against the commands sent and hands a
-// waiting Request its own: a shared code (OK, ERROR) only at its position.
+// waiting Request its own: a shared code (OK, ERROR) only at its position, or,
+// after a TX_BUSY, when it is the newest command sent.
 func (m *KissModem) completeHwRequest(subCmd byte, data []byte) {
 	code := byte(0)
 	if len(data) > 0 {
 		code = data[0]
 	}
-	switch {
-	case subCmd == HW_RESP_TX_DONE, subCmd == HW_RESP_RX_META:
-		return
-	case subCmd == HW_RESP_ERROR && code == HW_ERR_TX_BUSY:
-		// TX_BUSY reports a dropped frame without naming it, so a request keeps waiting for its own answer.
+	if subCmd == HW_RESP_TX_DONE || subCmd == HW_RESP_RX_META {
 		return
 	}
 	m.hwWaitMu.Lock()
 	defer m.hwWaitMu.Unlock()
+	if subCmd == HW_RESP_ERROR && code == HW_ERR_TX_BUSY {
+		m.hwStale = true
+		return
+	}
 	pos := m.hwAnswered
 	if m.hwAnswered < m.hwSent {
 		m.hwAnswered++
@@ -468,16 +470,18 @@ func (m *KissModem) completeHwRequest(subCmd byte, data []byte) {
 	if w == nil {
 		return
 	}
+	at := pos == w.pos || m.hwStale && w.pos == m.hwSent-1
 	var r hwReply
 	switch {
-	case subCmd == w.want && (subCmd != HW_RESP_OK || pos == w.pos):
-		m.hwAnswered = w.pos + 1
+	case subCmd == w.want && (subCmd != HW_RESP_OK || at):
 		r.data = data
-	case subCmd == HW_RESP_ERROR && pos == w.pos:
+	case subCmd == HW_RESP_ERROR && at:
 		r.err = fmt.Errorf("%w: %w", ErrHwRequestFailed, HwErrorFor(code))
 	default:
 		return
 	}
+	m.hwAnswered = w.pos + 1
+	m.hwStale = false
 	select {
 	case w.ch <- r:
 	default:
@@ -536,7 +540,7 @@ func (m *KissModem) SendData(data []byte) error {
 	for _, h := range handlers {
 		h(data)
 	}
-	if err := m.transport.Send(EncodeFrame(m.kissPort, KISS_CMD_DATA, data)); err != nil {
+	if err := m.transport.Send(EncodeFrame(0, KISS_CMD_DATA, data)); err != nil {
 		// A failed write may still have delivered the frame to the firmware.
 		return err
 	}
@@ -632,7 +636,7 @@ func (m *KissModem) sendKiss(cmd byte, data []byte, w *hwWait) error {
 		m.hwSent++
 		m.hwWaitMu.Unlock()
 	}
-	if err := m.transport.Send(EncodeFrame(m.kissPort, cmd, data)); err != nil {
+	if err := m.transport.Send(EncodeFrame(0, cmd, data)); err != nil {
 		if cmd == KISS_CMD_SETHARDWARE && len(data) > 0 {
 			m.hwWaitMu.Lock()
 			m.hwSent--
@@ -664,14 +668,23 @@ func (m *KissModem) SendHardwareCommand(subCmd byte, data []byte) error {
 	return m.SendKissCommand(KISS_CMD_SETHARDWARE, append([]byte{subCmd}, data...))
 }
 
-// SetRadio configures the radio (CR 5..8); the reply is HW_RESP_OK, not
-// HwResp(HW_CMD_SET_RADIO).
+// SetRadio configures the radio (CR 5..8, or 1..4 for 4/5..4/8); the reply is HW_RESP_OK.
 func (m *KissModem) SetRadio(config *RadioConfig) error {
-	if err := m.SendHardwareCommand(HW_CMD_SET_RADIO, config.ToBytes()); err != nil {
+	cfg := kissRadioConfig(config)
+	if err := m.SendHardwareCommand(HW_CMD_SET_RADIO, cfg.ToBytes()); err != nil {
 		return err
 	}
-	m.radioCfg.Store(new(*config))
+	m.radioCfg.Store(cfg)
 	return nil
+}
+
+// kissRadioConfig copies c with a coding rate of 1..4 as the denominator 5..8.
+func kissRadioConfig(c *RadioConfig) *RadioConfig {
+	cfg := *c
+	if cfg.CR >= 1 && cfg.CR <= 4 {
+		cfg.CR += 4
+	}
+	return &cfg
 }
 
 // SetTxPower sets TX power in dBm; the reply is HW_RESP_OK, not HwResp(HW_CMD_SET_TX_POWER).
@@ -712,10 +725,11 @@ func (m *KissModem) SetFullDuplex(on bool) error {
 
 // SetRadioWait configures the radio and waits for the firmware to acknowledge it.
 func (m *KissModem) SetRadioWait(ctx context.Context, config *RadioConfig) error {
-	if _, err := m.requestFor(ctx, HW_CMD_SET_RADIO, config.ToBytes(), HW_RESP_OK); err != nil {
+	cfg := kissRadioConfig(config)
+	if _, err := m.requestFor(ctx, HW_CMD_SET_RADIO, cfg.ToBytes(), HW_RESP_OK); err != nil {
 		return err
 	}
-	m.radioCfg.Store(new(*config))
+	m.radioCfg.Store(cfg)
 	return nil
 }
 
@@ -896,15 +910,7 @@ func (m *KissModem) onFrameWithSignalReport(frame *KissFrame) {
 		return
 	}
 	if frame.Command == KISS_CMD_SETHARDWARE && len(frame.Data) >= 1 && frame.Data[0] == HW_RESP_RX_META {
-		pending := m.pendingFrame
-		if pending != nil {
-			if m.pendingTimer != nil {
-				m.pendingTimer.Stop()
-				m.pendingTimer = nil
-			}
-			m.pendingFrame = nil
-		}
-
+		pending := m.takePending()
 		if pending != nil && len(frame.Data) >= 3 {
 			pending.SNR = snrDBFromWire(int8(frame.Data[1]))
 			pending.RSSI = int8(frame.Data[2])
@@ -922,13 +928,8 @@ func (m *KissModem) onFrameWithSignalReport(frame *KissFrame) {
 	}
 
 	if frame.Command == KISS_CMD_DATA {
-		stale := m.pendingFrame
+		stale := m.takePending()
 		if stale != nil {
-			if m.pendingTimer != nil {
-				m.pendingTimer.Stop()
-				m.pendingTimer = nil
-			}
-			m.pendingFrame = nil
 			m.statMetaMisattrib.Add(1)
 		}
 		m.pendingSeq++
@@ -944,7 +945,22 @@ func (m *KissModem) onFrameWithSignalReport(frame *KissFrame) {
 		return
 	}
 
+	// RX_META directly follows its data frame, so any other frame means it was dropped.
+	if stale := m.takePending(); stale != nil {
+		m.statMetaMisattrib.Add(1)
+		m.enqueueFrame(stale)
+	}
 	m.enqueueFrame(frame)
+}
+
+// takePending clears the pending data frame and stops its timer, returning the frame.
+func (m *KissModem) takePending() *KissFrame {
+	pending := m.pendingFrame
+	if m.pendingTimer != nil {
+		m.pendingTimer.Stop()
+	}
+	m.pendingFrame, m.pendingTimer = nil, nil
+	return pending
 }
 
 // flushPending dispatches the pending data frame unenriched; seq ignores a
@@ -1185,7 +1201,7 @@ func (m *KissModem) DeviceName(ctx context.Context) (string, error) {
 }
 
 // RadioConfiguration returns the firmware's cached radio parameters, which are
-// zero until the host has set them.
+// zero until the host has set them; they echo the request, not what the radio applied.
 func (m *KissModem) RadioConfiguration(ctx context.Context) (*RadioConfig, error) {
 	data, err := m.Request(ctx, HW_CMD_GET_RADIO, nil)
 	if err != nil {
@@ -1198,7 +1214,7 @@ func (m *KissModem) RadioConfiguration(ctx context.Context) (*RadioConfig, error
 	return cfg, err
 }
 
-// TxPowerLevel returns the firmware's cached transmit power in dBm.
+// TxPowerLevel returns the cached requested transmit power in dBm, which the radio may have clipped.
 func (m *KissModem) TxPowerLevel(ctx context.Context) (uint8, error) {
 	data, err := m.Request(ctx, HW_CMD_GET_TX_POWER, nil)
 	if err != nil {

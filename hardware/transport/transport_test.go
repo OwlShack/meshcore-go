@@ -54,3 +54,12 @@ func TestReadLoopOversizeResync(t *testing.T) {
 		}
 	}
 }
+
+func TestSerialConfigDefaultsBaudRate(t *testing.T) {
+	if got := (SerialConfig{}).mode().BaudRate; got != 115200 {
+		t.Errorf("zero BaudRate opens at %d, want 115200", got)
+	}
+	if got := (SerialConfig{BaudRate: 57600}).mode().BaudRate; got != 57600 {
+		t.Errorf("BaudRate 57600 opens at %d", got)
+	}
+}
