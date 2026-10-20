@@ -5,6 +5,18 @@ import meshcore "github.com/OwlShack/meshcore-go"
 // SupportedProtocolVersion is the app_target_ver this library advertises in CMD_DEVICE_QUERY.
 const SupportedProtocolVersion = 3
 
+// FirmwareVerCode and FirmwareVersion name the companion firmware release this package matches.
+const (
+	FirmwareVerCode = 14
+	FirmwareVersion = "v1.18.0"
+)
+
+// Default TCP port and serial baud rate of a companion.
+const (
+	DefaultTCPPort  = 5000
+	DefaultBaudRate = 115200
+)
+
 // Serial frame types.
 const (
 	FrameTypeIncoming byte = 0x3e
@@ -170,6 +182,19 @@ const (
 	ErrIllegalArg     = ErrCodeIllegalArg
 )
 
+// Telemetry modes for the SelfInfo and SetOtherParams telemetry fields.
+const (
+	TelemModeDeny       byte = 0
+	TelemModeAllowFlags byte = 1 // use the contact's ContactFlagTelem* flags
+	TelemModeAllowAll   byte = 2
+)
+
+// Advert location policies.
+const (
+	AdvertLocNone  byte = 0
+	AdvertLocShare byte = 1
+)
+
 // OutPathUnknown is the firmware's OUT_PATH_UNKNOWN path_len.
 const OutPathUnknown byte = 0xFF
 
@@ -194,4 +219,9 @@ const (
 const (
 	MaxFrameSize    = 176 // firmware BaseSerialInterface.h MAX_FRAME_SIZE
 	FrameHeaderSize = 3   // type(1) + length(2)
+)
+
+const (
+	MaxSignDataLen    = 8 * 1024         // total bytes CmdSignData may feed
+	MaxChannelDataLen = MaxFrameSize - 9 // largest RespChannelDataRecv payload
 )

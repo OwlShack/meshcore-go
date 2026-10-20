@@ -29,9 +29,17 @@ type SerialTransport struct {
 
 var _ Transport = (*SerialTransport)(nil)
 
+// mode is the port mode; a zero BaudRate means 115200.
+func (c SerialConfig) mode() *serial.Mode {
+	if c.BaudRate == 0 {
+		return &serial.Mode{BaudRate: 115200}
+	}
+	return &serial.Mode{BaudRate: c.BaudRate}
+}
+
 func NewSerialTransport(config SerialConfig) *SerialTransport {
 	dial := func(_ context.Context) (Conn, error) {
-		port, err := serial.Open(config.Port, &serial.Mode{BaudRate: config.BaudRate})
+		port, err := serial.Open(config.Port, config.mode())
 		if err != nil {
 			return nil, fmt.Errorf("open serial port: %w", err)
 		}

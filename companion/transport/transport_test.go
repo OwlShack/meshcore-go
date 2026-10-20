@@ -288,3 +288,12 @@ func bytesEqual(a, b []byte) bool {
 	}
 	return true
 }
+
+func TestSerialConfigDefaultBaudRate(t *testing.T) {
+	if got := (SerialConfig{}).mode().BaudRate; got != 115200 {
+		t.Fatalf("zero BaudRate opens at %d, want 115200", got)
+	}
+	if got := (SerialConfig{BaudRate: 9600}).mode().BaudRate; got != 9600 {
+		t.Fatalf("BaudRate 9600 opens at %d", got)
+	}
+}

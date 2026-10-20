@@ -2,6 +2,7 @@ package companion
 
 import (
 	"encoding/binary"
+	"fmt"
 
 	meshcore "github.com/OwlShack/meshcore-go"
 )
@@ -235,6 +236,14 @@ func (c SetTxPowerCommand) ToBytes() []byte {
 	return []byte{CmdSetRadioTxPower, c.TxPower}
 }
 
+// NewSetTxPowerCommand sets TxPower from signed dBm.
+func NewSetTxPowerCommand(dbm int8) SetTxPowerCommand {
+	return SetTxPowerCommand{TxPower: byte(dbm)}
+}
+
+// TxPowerDBm is TxPower read as signed dBm.
+func (c SetTxPowerCommand) TxPowerDBm() int8 { return int8(c.TxPower) }
+
 type ResetPathCommand struct {
 	PublicKey [32]byte
 }
@@ -316,6 +325,14 @@ func (ExportPrivateKeyCommand) ToBytes() []byte {
 
 type ImportPrivateKeyCommand struct {
 	PrivateKey [64]byte
+}
+
+// Validate returns an ILLEGAL_ARG *CommandError for a key that fails meshcore.ValidatePrivateKey.
+func (c ImportPrivateKeyCommand) Validate() error {
+	if !meshcore.ValidatePrivateKey(c.PrivateKey[:]) {
+		return cmdErr(CmdImportPrivateKey, ErrCodeIllegalArg)
+	}
+	return nil
 }
 
 func (c ImportPrivateKeyCommand) ToBytes() []byte {
@@ -558,6 +575,14 @@ type SetFloodScopeCommand struct {
 	Unscoped     bool
 }
 
+// Validate rejects a TransportKey that is neither empty (reset) nor 16 bytes.
+func (c SetFloodScopeCommand) Validate() error {
+	if !c.Unscoped && len(c.TransportKey) != 0 && len(c.TransportKey) != 16 {
+		return fmt.Errorf("companion: flood scope key is %d bytes, want 0 or 16", len(c.TransportKey))
+	}
+	return nil
+}
+
 func (c SetFloodScopeCommand) ToBytes() []byte {
 	if c.Unscoped {
 		return []byte{CmdSetFloodScopeKey, 1}
@@ -683,6 +708,20 @@ func (GetTuningParamsCommand) ToBytes() []byte {
 type SetDefaultFloodScopeCommand struct {
 	Name string
 	Key  []byte
+}
+
+// Validate accepts the zero value (clear) or a 1-30 byte Name with a 16-byte Key.
+func (c SetDefaultFloodScopeCommand) Validate() error {
+	if c.Name == "" && len(c.Key) == 0 {
+		return nil
+	}
+	if len(c.Name) < 1 || len(c.Name) > 30 {
+		return fmt.Errorf("companion: default flood scope name is %d bytes, want 1-30", len(c.Name))
+	}
+	if len(c.Key) != 16 {
+		return fmt.Errorf("companion: default flood scope key is %d bytes, want 16", len(c.Key))
+	}
+	return nil
 }
 
 func (c SetDefaultFloodScopeCommand) ToBytes() []byte {
