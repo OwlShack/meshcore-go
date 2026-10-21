@@ -530,3 +530,43 @@ func TestExpandedKey_SharedSecretAgrees(t *testing.T) {
 		t.Fatal("shared secret is all zero")
 	}
 }
+
+func reservedPrefixSeed() []byte {
+	seed := make([]byte, ed25519.SeedSize)
+	seed[0], seed[1] = 0x63, 0x01 // public key starts 0x00
+	return seed
+}
+
+func TestGenerateLocalIdentity_SkipsReservedPrefix(t *testing.T) {
+	good := bytes.Repeat([]byte{0x11}, ed25519.SeedSize)
+	li, err := GenerateLocalIdentity(bytes.NewReader(append(reservedPrefixSeed(), good...)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := NewLocalIdentityFromSeed([ed25519.SeedSize]byte(good)); !li.Matches(want.Identity) {
+		t.Fatalf("got pubkey %x, want the second key %x", li.PublicKeyBytes(), want.PublicKeyBytes())
+	}
+}
+
+func TestValidatePrivateKey(t *testing.T) {
+	unclamped := hexDecode(t, fwTestPrv)
+	unclamped[0] |= 1
+	tests := []struct {
+		name string
+		prv  []byte
+		want bool
+	}{
+		{"firmware test key", hexDecode(t, fwTestPrv), true},
+		{"clamped seed key", expandSeedForTest(bytes.Repeat([]byte{0x11}, 32)), true},
+		{"reserved 0x00 prefix", expandSeedForTest(reservedPrefixSeed()), false},
+		{"unclamped scalar", unclamped, false},
+		{"short", hexDecode(t, fwTestPrv)[:63], false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ValidatePrivateKey(tt.prv); got != tt.want {
+				t.Fatalf("ValidatePrivateKey = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

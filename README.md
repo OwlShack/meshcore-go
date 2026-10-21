@@ -1,6 +1,6 @@
 # meshcore-go
 
-Go implementation of the [MeshCore](https://github.com/meshcore-dev/MeshCore) protocol, tracking firmware **v1.17.1**. Provides encode/decode for every protocol payload type, the cryptography, identity and key management, the companion serial protocol (frames, commands, responses, pushes) with a typed client, a KISS modem driver for bare radios, Serial/TCP transports for both, and a node runtime (routing, peers, channels, regions, retries, scheduling).
+Go implementation of the [MeshCore](https://github.com/meshcore-dev/MeshCore) protocol, tracking firmware **v1.18.0**. Provides encode/decode for every protocol payload type, the cryptography, identity and key management, the companion serial protocol (frames, commands, responses, pushes) with a typed client, a KISS modem driver for bare radios, Serial/TCP transports for both, and a node runtime (routing, peers, channels, regions, retries, scheduling).
 
 ## Package Structure
 

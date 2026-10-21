@@ -2,6 +2,7 @@ package companion
 
 import (
 	"bytes"
+	"crypto/sha512"
 	"encoding/binary"
 	"errors"
 	"reflect"
@@ -10,6 +11,14 @@ import (
 )
 
 type encoder interface{ ToBytes() []byte }
+
+// validPrvKey is an expanded private key that passes meshcore.ValidatePrivateKey.
+func validPrvKey() [64]byte {
+	k := sha512.Sum512([]byte{1})
+	k[0] &= 248
+	k[31] = k[31]&63 | 64
+	return k
+}
 
 func seq(n int, start byte) []byte {
 	b := make([]byte, n)
@@ -56,7 +65,7 @@ func TestParseCommandRoundTrip(t *testing.T) {
 		SetTuningParamsCommand{RxDelayBase: 0.5, AirtimeFactor: 1.5},
 		DeviceQueryCommand{AppTargetVersion: 3},
 		ExportPrivateKeyCommand{},
-		ImportPrivateKeyCommand{PrivateKey: [64]byte{1, 2, 3}},
+		ImportPrivateKeyCommand{PrivateKey: validPrvKey()},
 		SendRawDataCommand{Path: []byte{1, 2, 3, 4}, PathHashSize: 2, RawData: []byte{9, 8, 7, 6}},
 		SendLoginCommand{PublicKey: pub, Password: "secret"},
 		SendStatusReqCommand{PublicKey: pub},
@@ -535,5 +544,91 @@ func TestFixedStrCutsMidRuneAsFirmware(t *testing.T) {
 	b = ChannelInfoResponse{Name: "ab\x00cd"}.ToBytes()
 	if got := b[2:6]; !bytes.Equal(got, []byte{'a', 'b', 0, 0}) {
 		t.Fatalf("name stops at NUL: %x", got)
+	}
+}
+
+func TestToBytesCutsToMaxFrameSizeAsFirmware(t *testing.T) {
+	text := strings.Repeat("a", MaxFrameSize-14) + "é" + strings.Repeat("b", 100)
+	msgs := []encoder{
+		ContactMsgRecvResponse{Text: text},
+		ChannelMsgRecvResponse{Text: text},
+		ContactMsgRecvV3Response{TxtType: TxtTypeSignedPlain, SenderPrefix: seq(4, 1), Text: text},
+		ChannelMsgRecvV3Response{Text: text},
+	}
+	for _, m := range msgs {
+		b := m.ToBytes()
+		if len(b) != MaxFrameSize {
+			t.Fatalf("%T is %d bytes, want %d", m, len(b), MaxFrameSize)
+		}
+		if _, err := FrameEncode(FrameTypeIncoming, b); err != nil {
+			t.Fatalf("%T: %v", m, err)
+		}
+	}
+	if b := (ContactMsgRecvResponse{Text: text}).ToBytes(); b[len(b)-1] != 0xC3 {
+		t.Fatalf("text cut at %x, want mid-rune 0xc3 as firmware", b[len(b)-1])
+	}
+	b := SelfInfoResponse{Name: strings.Repeat("n", 40)}.ToBytes()
+	if got := len(b) - 58; got != 31 {
+		t.Fatalf("SelfInfo name is %d bytes, want 31", got)
+	}
+}
+
+func TestDeviceInfoToBytesCapsMaxContacts(t *testing.T) {
+	if got := (DeviceInfoResponse{MaxContacts: 1000}).ToBytes()[2]; got != 255 {
+		t.Fatalf("max_contacts/2 byte = %d, want 255", got)
+	}
+}
+
+func TestFirmwareConstants(t *testing.T) {
+	if FirmwareVerCode != 14 || FirmwareVersion != "v1.18.0" || MaxChannelDataLen != 167 || MaxSignDataLen != 8192 ||
+		DefaultTCPPort != 5000 || DefaultBaudRate != 115200 || TelemModeAllowAll != 2 || AdvertLocShare != 1 {
+		t.Fatal("constants drifted from firmware 1.18.0")
+	}
+}
+
+func TestTxPowerDBm(t *testing.T) {
+	if got := (SelfInfoResponse{TxPower: 0xF7}).TxPowerDBm(); got != -9 {
+		t.Fatalf("SelfInfo TxPowerDBm = %d, want -9", got)
+	}
+	c := NewSetTxPowerCommand(-9)
+	if got := c.ToBytes(); !bytes.Equal(got, []byte{CmdSetRadioTxPower, 0xF7}) || c.TxPowerDBm() != -9 {
+		t.Fatalf("SetTxPower -9 = %x", got)
+	}
+}
+
+func TestImportPrivateKeyValidate(t *testing.T) {
+	got, err := ParseCommand(ImportPrivateKeyCommand{PrivateKey: [64]byte{1, 2, 3}}.ToBytes())
+	if err != nil {
+		t.Fatalf("ParseCommand: %v", err)
+	}
+	var ce *CommandError
+	if err := got.(ImportPrivateKeyCommand).Validate(); !errors.As(err, &ce) || ce.ErrCode != ErrCodeIllegalArg {
+		t.Fatalf("Validate() = %v, want ILLEGAL_ARG as firmware answers", err)
+	}
+	if err := (ImportPrivateKeyCommand{PrivateKey: validPrvKey()}).Validate(); err != nil {
+		t.Errorf("Validate(valid key) = %v", err)
+	}
+}
+
+func TestFloodScopeValidate(t *testing.T) {
+	key := make([]byte, 16)
+	ok := []interface{ Validate() error }{
+		SetFloodScopeCommand{}, SetFloodScopeCommand{TransportKey: key}, SetFloodScopeCommand{Unscoped: true},
+		SetDefaultFloodScopeCommand{}, SetDefaultFloodScopeCommand{Name: strings.Repeat("s", 30), Key: key},
+	}
+	bad := []interface{ Validate() error }{
+		SetFloodScopeCommand{TransportKey: key[:15]}, SetFloodScopeCommand{TransportKey: make([]byte, 17)},
+		SetDefaultFloodScopeCommand{Name: "s"}, SetDefaultFloodScopeCommand{Key: key},
+		SetDefaultFloodScopeCommand{Name: strings.Repeat("s", 31), Key: key}, SetDefaultFloodScopeCommand{Name: "s", Key: key[:15]},
+	}
+	for _, c := range ok {
+		if err := c.Validate(); err != nil {
+			t.Errorf("%+v: %v", c, err)
+		}
+	}
+	for _, c := range bad {
+		if c.Validate() == nil {
+			t.Errorf("%+v: no error", c)
+		}
 	}
 }

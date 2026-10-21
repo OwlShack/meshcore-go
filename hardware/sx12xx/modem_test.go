@@ -488,6 +488,24 @@ func TestInterferenceGateQuietOnConvergedFloor(t *testing.T) {
 	}
 }
 
+func TestInterferenceGateUsesTheClampedFloor(t *testing.T) {
+	radio := newFakeRadio()
+	m, err := NewModem(radio, meshcoreConfig(), withNoiseTimings(time.Hour, 100*time.Millisecond),
+		WithInterferenceThreshold(14))
+	if err != nil {
+		t.Fatalf("NewModem: %v", err)
+	}
+	defer m.Close()
+
+	if got := waitForFloor(t, m, -120, -120); got != -120 {
+		t.Fatalf("noise floor = %d dBm from -130 dBm readings, want -120", got)
+	}
+	radio.setRSSI(-112)
+	if m.channelBusy() {
+		t.Error("-112 dBm reads busy: the gate used the unclamped -130 dBm floor")
+	}
+}
+
 func TestAGCResetReopensNoiseFloorMeasurement(t *testing.T) {
 	radio := newFakeRadio()
 	radio.setRSSI(-100)

@@ -724,6 +724,17 @@ func TestPacket_AppendPathHash_Full(t *testing.T) {
 	}
 }
 
+func TestPacket_AppendPathHash_StopsAt63Hops(t *testing.T) {
+	pkt := &Packet{PathLength: MaxPathHashCount, Path: bytes.Repeat([]byte{0xAA}, MaxPathHashCount)}
+
+	if ok := pkt.AppendPathHash([]byte{0xCC}); ok {
+		t.Fatal("AppendPathHash() = true at 63 one-byte hops, want false")
+	}
+	if pkt.PathLength != MaxPathHashCount || len(pkt.Path) != MaxPathHashCount {
+		t.Fatalf("path changed to len byte %#x with %d bytes", pkt.PathLength, len(pkt.Path))
+	}
+}
+
 func TestPacket_RemoveFirstPathHash(t *testing.T) {
 	pkt := &Packet{}
 	for _, hash := range []byte{0x01, 0x02, 0x03} {
@@ -986,5 +997,34 @@ func TestMakePathLen_RoundTrip(t *testing.T) {
 	}
 	if got := MakePathLen(2, 5); got != 0x45 {
 		t.Errorf("MakePathLen(2, 5) = %#02x, want 0x45", got)
+	}
+}
+
+func TestPacketToBytesRejectsWhatFirmwareWouldNotSend(t *testing.T) {
+	tests := []struct {
+		name string
+		p    Packet
+	}{
+		{"reserved 4-byte hash mode", Packet{PathLength: 0xC1, Path: []byte{1, 2, 3, 4}}},
+		{"path longer than 64 bytes", Packet{PathLength: MakePathLen(2, 33), Path: make([]byte, 66)}},
+		{"path bytes disagree with path_len", Packet{PathLength: MakePathLen(1, 2), Path: []byte{1}}},
+		{"payload over 184 bytes", Packet{Payload: make([]byte, MaxPacketPayload+1)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := tt.p.ToBytes(); err == nil {
+				t.Fatal("ToBytes accepted an invalid packet")
+			}
+		})
+	}
+}
+
+func TestPacketIsShare(t *testing.T) {
+	share := Packet{Header: MakeHeader(RouteTypeTransportFlood, PayloadTypeAdvert, PayloadVer1)}
+	scoped := share
+	scoped.TransportCode1 = 1
+	plain := Packet{Header: MakeHeader(RouteTypeFlood, PayloadTypeAdvert, PayloadVer1)}
+	if !share.IsShare() || scoped.IsShare() || plain.IsShare() {
+		t.Fatalf("IsShare: share %v, scoped %v, plain %v; want true, false, false", share.IsShare(), scoped.IsShare(), plain.IsShare())
 	}
 }

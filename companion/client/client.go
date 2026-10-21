@@ -171,8 +171,11 @@ func (c *Client) sendAndWaitFor(ctx context.Context, cmd []byte, w *responseWait
 
 	select {
 	case resp := <-w.ch:
-		if resp.Code == companion.RespErr {
+		switch resp.Code {
+		case companion.RespErr:
 			return resp, toError(resp)
+		case companion.RespDisabled:
+			return resp, ErrDisabled
 		}
 		return resp, nil
 	case <-ctx.Done():
@@ -471,10 +474,10 @@ func (c *Client) GetBattAndStorage(ctx context.Context) (companion.BattAndStorag
 	return as[companion.BattAndStorageResponse](resp)
 }
 
-// SetAdvertName sets the device's advertisement name and waits for Ok.
+// SetAdvertName sets the device's advertisement name, cut to 31 bytes on a rune boundary, and waits for Ok.
 func (c *Client) SetAdvertName(ctx context.Context, name string) error {
 	_, err := c.sendAndWait(ctx,
-		companion.SetAdvertNameCommand{Name: name}.ToBytes(),
+		companion.SetAdvertNameCommand{Name: meshcore.TruncateUTF8(name, 31)}.ToBytes(),
 		companion.RespOk, companion.RespErr,
 	)
 	return err
@@ -503,9 +506,16 @@ func (c *Client) SetRadioParams(ctx context.Context, freq, bw uint32, sf, cr byt
 }
 
 // SetTxPower sets the radio transmit power and waits for Ok.
+//
+// Deprecated: use SetTxPowerDBm.
 func (c *Client) SetTxPower(ctx context.Context, power byte) error {
+	return c.SetTxPowerDBm(ctx, int8(power))
+}
+
+// SetTxPowerDBm sets the radio transmit power in signed dBm and waits for Ok.
+func (c *Client) SetTxPowerDBm(ctx context.Context, dbm int8) error {
 	_, err := c.sendAndWait(ctx,
-		companion.SetTxPowerCommand{TxPower: power}.ToBytes(),
+		companion.NewSetTxPowerCommand(dbm).ToBytes(),
 		companion.RespOk, companion.RespErr,
 	)
 	return err
@@ -605,7 +615,7 @@ func (c *Client) SetChannel(ctx context.Context, idx byte, name string, secret [
 func (c *Client) ExportPrivateKey(ctx context.Context) (companion.PrivateKeyResponse, error) {
 	resp, err := c.sendAndWait(ctx,
 		companion.ExportPrivateKeyCommand{}.ToBytes(),
-		companion.RespPrivateKey, companion.RespErr,
+		companion.RespPrivateKey, companion.RespErr, companion.RespDisabled,
 	)
 	if err != nil {
 		return companion.PrivateKeyResponse{}, err
@@ -613,10 +623,13 @@ func (c *Client) ExportPrivateKey(ctx context.Context) (companion.PrivateKeyResp
 	return as[companion.PrivateKeyResponse](resp)
 }
 
-// ImportPrivateKey imports a private key into the device and waits for Ok.
+// ImportPrivateKey imports a private key into the device and waits for Ok; an invalid key gives ErrInvalidPrivateKey without sending.
 func (c *Client) ImportPrivateKey(ctx context.Context, key [64]byte) error {
+	if !meshcore.ValidatePrivateKey(key[:]) {
+		return ErrInvalidPrivateKey
+	}
 	cmd := companion.ImportPrivateKeyCommand{PrivateKey: key}
-	_, err := c.sendAndWait(ctx, cmd.ToBytes(), companion.RespOk, companion.RespErr)
+	_, err := c.sendAndWait(ctx, cmd.ToBytes(), companion.RespOk, companion.RespErr, companion.RespDisabled)
 	if err == nil {
 		c.mu.Lock()
 		c.self = nil
@@ -850,6 +863,9 @@ func (c *Client) SetOtherParamsFull(ctx context.Context, cmd companion.SetOtherP
 // SetFloodScope sets the flood scope transport key and waits for Ok.
 func (c *Client) SetFloodScope(ctx context.Context, transportKey []byte) error {
 	cmd := companion.SetFloodScopeCommand{TransportKey: transportKey}
+	if err := cmd.Validate(); err != nil {
+		return err
+	}
 	_, err := c.sendAndWait(ctx, cmd.ToBytes(), companion.RespOk, companion.RespErr)
 	return err
 }
@@ -946,7 +962,13 @@ func (c *Client) GetTuningParams(ctx context.Context) (companion.TuningParamsRes
 
 // SetDefaultFloodScope sets the default flood scope name and key and waits for Ok.
 func (c *Client) SetDefaultFloodScope(ctx context.Context, name string, key []byte) error {
+	if name == "" {
+		return errors.New("companion: default flood scope name is empty, use ClearDefaultFloodScope to clear")
+	}
 	cmd := companion.SetDefaultFloodScopeCommand{Name: name, Key: key}
+	if err := cmd.Validate(); err != nil {
+		return err
+	}
 	_, err := c.sendAndWait(ctx, cmd.ToBytes(), companion.RespOk, companion.RespErr)
 	return err
 }
@@ -998,6 +1020,12 @@ func (c *Client) SendPacket(ctx context.Context, priority uint8, packet *meshcor
 	}
 	return c.SendRawPacket(ctx, priority, raw)
 }
+
+// ErrDisabled is returned when the device answers RespDisabled.
+var ErrDisabled = errors.New("companion: command disabled in device firmware")
+
+// ErrInvalidPrivateKey is returned by ImportPrivateKey for a key that fails meshcore.ValidatePrivateKey.
+var ErrInvalidPrivateKey = errors.New("companion: private key fails firmware validation")
 
 type DeviceError struct {
 	Code    byte

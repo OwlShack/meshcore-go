@@ -66,6 +66,10 @@ func TestImageCalBand(t *testing.T) {
 		{"779 MHz", 779_000_000, CalImg779, CalImg787},
 		{"868 MHz", 868_000_000, CalImg863, CalImg870},
 		{"915 MHz", 915_000_000, CalImg902, CalImg928},
+		{"928.5 MHz", 928_500_000, CalImg902, CalImg928},
+		{"445 MHz", 445_000_000, 0x6D, 0x71}, // outside every band
+		{"929 MHz", 929_000_000, 0xE7, 0xEB},
+		{"169.4 MHz", 169_400_000, 0x29, 0x2D},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

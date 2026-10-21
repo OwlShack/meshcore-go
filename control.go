@@ -9,6 +9,8 @@ import (
 const (
 	ControlSubTypeDiscoverReq  byte = 0x08
 	ControlSubTypeDiscoverResp byte = 0x09
+
+	ControlZeroHopFlag byte = 0x80 // set in Flags: direct zero-hop only, never relayed
 )
 
 type Control struct {

@@ -36,7 +36,7 @@ func (r *Request) Decrypt(sharedSecret []byte) []byte {
 
 // NewRequest encrypts plaintext into a REQ payload from self to peer.
 func NewRequest(self LocalIdentity, peer Identity, plaintext []byte, sharedSecret []byte) (*Request, error) {
-	mac, enc, err := macEncrypt(sharedSecret, plaintext)
+	mac, enc, err := macEncrypt(sharedSecret, plaintext, CipherMACSize)
 	if err != nil {
 		return nil, err
 	}

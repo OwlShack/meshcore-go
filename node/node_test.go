@@ -546,15 +546,46 @@ func TestNode_RelayDelayOverrides(t *testing.T) {
 	}
 }
 
+func TestNode_FloodRelayDelayHooks(t *testing.T) {
+	var gotHops uint8
+	var gotLen int
+	var gotAirtime uint32
+	hooks := map[string]Option{
+		"packet": WithFloodRelayDelay(func(p *meshcore.Packet, at uint32) time.Duration {
+			gotHops, gotLen, gotAirtime = p.PathHashCount(), relayLen(p), at
+			return 0
+		}),
+		"deprecated length": WithFloodRetransmitDelay(func(l int, at uint32) time.Duration {
+			gotHops, gotLen, gotAirtime = 1, l, at
+			return 0
+		}),
+	}
+	for name, hook := range hooks {
+		t.Run(name, func(t *testing.T) {
+			gotHops, gotLen, gotAirtime = 0, 0, 0
+			n := New(seedIdentity(1), &mockTxRadio{}, hook,
+				WithAllowForwardHandler(func(*meshcore.Packet) bool { return true }),
+				WithAirtimeEstimator(func(l int) uint32 { return uint32(l) }),
+				WithRegions(meshcore.NewRegion("nz")),
+			)
+			defer n.Stop()
+
+			pkt := makeTransportFloodPacket(meshcore.NewRegion("nz"), []byte{1, 2, 3, 4, 5})
+			n.router.route(pkt)
+			n.router.relayFlood(pkt)
+			if gotHops != 1 || gotLen != 8 || gotAirtime != 8 {
+				t.Errorf("hook got (hops=%d, len=%d, airtime=%d), want (1, 8, 8) without transport codes", gotHops, gotLen, gotAirtime)
+			}
+		})
+	}
+}
+
 func TestNode_ExtraAckTransmitCount(t *testing.T) {
 	radio := &mockTxRadio{}
-	n := New(seedIdentity(1), radio,
-		WithDirectRetransmitDelay(func(int, uint32) time.Duration { return 100 * time.Millisecond }),
-		WithExtraAckTransmitCount(func() uint8 { return 2 }),
-	)
+	n := New(seedIdentity(1), radio, WithExtraAckTransmitCount(func() uint8 { return 2 }))
 	defer n.Stop()
 
-	n.router.routeDirectRecvAcks(ackRelayPacket(), 0)
+	n.router.routeDirectRecvAcks(ackRelayPacket(), 100*time.Millisecond)
 
 	calls := radio.enqueued()
 	want := []struct {
@@ -562,9 +593,9 @@ func TestNode_ExtraAckTransmitCount(t *testing.T) {
 		remaining uint8
 		payload   byte
 	}{
-		{400 * time.Millisecond, 2, meshcore.PayloadTypeMultiPart},
-		{800 * time.Millisecond, 1, meshcore.PayloadTypeMultiPart},
-		{800 * time.Millisecond, 0, meshcore.PayloadTypeAck},
+		{100 * time.Millisecond, 2, meshcore.PayloadTypeMultiPart},
+		{400 * time.Millisecond, 1, meshcore.PayloadTypeMultiPart},
+		{700 * time.Millisecond, 0, meshcore.PayloadTypeAck},
 	}
 	if len(calls) != len(want) {
 		t.Fatalf("got %d enqueues, want %d", len(calls), len(want))
@@ -599,6 +630,53 @@ func TestNode_ExtraAckTransmitCount(t *testing.T) {
 		if !bytes.Equal(mp.WrappedPayload, []byte{1, 2, 3, 4}) {
 			t.Errorf("copy %d wrapped payload = %x, want 01020304", i, mp.WrappedPayload)
 		}
+	}
+}
+
+func TestNode_DirectRelayDelayDrawnOnce(t *testing.T) {
+	id, other := seedIdentity(1), seedIdentity(2)
+	path := []byte{id.Hash()[0], other.Hash()[0]}
+	crc := []byte{1, 2, 3, 4}
+	ms := time.Millisecond
+	cases := []struct {
+		name string
+		data []byte
+		want []time.Duration
+	}{
+		{"plain", makeDirectPacket(meshcore.PayloadTypeTxtMsg, path, []byte{9, 8, 7, 6, 5}), []time.Duration{100 * ms}},
+		{"ack", makeDirectPacket(meshcore.PayloadTypeAck, path, crc), []time.Duration{100 * ms, 400 * ms, 700 * ms}},
+		{"multipart ack", multiAckDirect(path, crc, 1), []time.Duration{700 * ms, 1000 * ms, 1300 * ms}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			radio := &mockTxRadio{}
+			var hookHops []uint8
+			n := New(id, radio,
+				WithAllowForwardHandler(func(*meshcore.Packet) bool { return true }),
+				WithExtraAckTransmitCount(func() uint8 { return 2 }),
+				WithDirectRelayDelay(func(p *meshcore.Packet, _ uint32) time.Duration {
+					hookHops = append(hookHops, p.PathHashCount())
+					return 100 * ms
+				}),
+			)
+			defer n.Stop()
+
+			if got := n.router.route(mustPacketFromBytes(t, c.data)); got != RouteActionForward {
+				t.Fatalf("route() = %v, want %v", got, RouteActionForward)
+			}
+			calls := radio.enqueued()
+			if len(calls) != len(c.want) {
+				t.Fatalf("got %d enqueues, want %d", len(calls), len(c.want))
+			}
+			for i, w := range c.want {
+				if calls[i].delay != w {
+					t.Errorf("copy %d delay = %v, want %v", i, calls[i].delay, w)
+				}
+			}
+			if len(hookHops) != 1 || hookHops[0] != 2 {
+				t.Errorf("hook saw hop counts %v, want one call with our hash still in the path [2]", hookHops)
+			}
+		})
 	}
 }
 

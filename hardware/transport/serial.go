@@ -10,7 +10,14 @@ import (
 
 type SerialConfig struct {
 	Port     string
-	BaudRate int
+	BaudRate int // zero means 115200
+}
+
+func (c SerialConfig) mode() *serial.Mode {
+	if c.BaudRate == 0 {
+		return &serial.Mode{BaudRate: 115200}
+	}
+	return &serial.Mode{BaudRate: c.BaudRate}
 }
 
 type SerialTransport struct {
@@ -26,7 +33,7 @@ func NewSerialTransport(config SerialConfig) *SerialTransport {
 
 // Connect opens the port and starts reading.
 func (t *SerialTransport) Connect(_ context.Context) error {
-	port, err := serial.Open(t.config.Port, &serial.Mode{BaudRate: t.config.BaudRate})
+	port, err := serial.Open(t.config.Port, t.config.mode())
 	if err != nil {
 		return fmt.Errorf("open serial port: %w", err)
 	}

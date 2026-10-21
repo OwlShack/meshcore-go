@@ -132,7 +132,7 @@ func ParseAnonRegionsReply(data []byte) (AnonRegionsReply, error) {
 
 // NewAnonReq encrypts plaintext into an ANON_REQ payload to peer, carrying sender's public key.
 func NewAnonReq(sender LocalIdentity, peer Identity, plaintext []byte, sharedSecret []byte) (*AnonReq, error) {
-	mac, enc, err := macEncrypt(sharedSecret, plaintext)
+	mac, enc, err := macEncrypt(sharedSecret, plaintext, 1+PubKeySize)
 	if err != nil {
 		return nil, err
 	}

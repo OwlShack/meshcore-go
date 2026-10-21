@@ -12,6 +12,12 @@ const (
 	GroupDataTypeDev      uint16 = 0xFFFF // developer namespace for experiments and apps
 )
 
+// IsGroupDataTypeReserved reports whether t is in 0x0000-0x00FF, reserved for internal use.
+func IsGroupDataTypeReserved(t uint16) bool { return t <= 0x00FF }
+
+// IsGroupDataTypeDev reports whether t is in 0xFF00-0xFFFF, free for development without an allocation.
+func IsGroupDataTypeDev(t uint16) bool { return t >= 0xFF00 }
+
 // MaxGroupDataLength is the most data one GRP_DATA packet can carry.
 const MaxGroupDataLength = MaxPacketPayload - aes.BlockSize - 3
 
@@ -47,7 +53,7 @@ func (g *GroupData) Decrypt(channelKey []byte) []byte {
 
 // NewGroupData encrypts plaintext into a GRP_DATA payload for the channel with this hash and key.
 func NewGroupData(channelHash byte, psk []byte, plaintext []byte) (*GroupData, error) {
-	mac, enc, err := macEncrypt(psk, plaintext)
+	mac, enc, err := macEncrypt(psk, plaintext, 1)
 	if err != nil {
 		return nil, err
 	}

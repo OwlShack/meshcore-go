@@ -75,6 +75,12 @@ type Opts struct {
 	// boards with an external front-end module (SX126X_REGISTER_PATCH). Leave
 	// it off unless the board's MeshCore variant defines it.
 	FEMRxPatch bool
+
+	// SX1268 selects the SX1268 PA table for SetTxPower instead of the SX1262 one.
+	SX1268 bool
+
+	// CurrentLimit is the PA over-current limit in mA, up to 140 in 2.5 mA steps; zero means 140.
+	CurrentLimit float64
 }
 
 // DefaultOpts holds the default options; ResetPin and BusyPin must still be set.
