@@ -12,9 +12,11 @@ tests, CI and tooling get no entry, however big the PR, and nothing lists what i
 `### Added`, `### Changed` and `### Fixed`, plus `### Upgrading` when users must change their
 code. `scripts/prepare-release.sh` renames the section for the release.
 
-## Unreleased
+## v1.10.0 - 2026-10-21
 
-Synced to MeshCore firmware v1.18.0.
+Baseline `v1.9.0`. Synced to MeshCore firmware v1.18.0: relayed direct ACKs now wait the relay
+delay, and a transport flood with code 0 counts as unscoped. KISS requests no longer stall after the
+firmware drops a reply, and the codecs, companion client and device side refuse what firmware would.
 
 ### Upgrading
 
