@@ -7,7 +7,7 @@ import (
 	meshcore "github.com/OwlShack/meshcore-go"
 )
 
-// The ToBytes methods below encode what a device sends: code byte first, no frame header, nothing truncated to MaxFrameSize.
+// The ToBytes methods below encode what a device sends: code byte first, no frame header; message text and the SelfInfo name are cut to fit.
 
 func le32(b []byte, v uint32) []byte { return binary.LittleEndian.AppendUint32(b, v) }
 
@@ -84,12 +84,12 @@ func (r SelfInfoResponse) ToBytes() []byte {
 	b = le32(b, r.RadioFrequency)
 	b = le32(b, r.RadioBandwidth)
 	b = append(b, r.RadioSpreadFactor, r.RadioCodingRate)
-	return append(b, r.Name...)
+	return append(b, r.Name[:min(len(r.Name), 31)]...)
 }
 
-// ToBytes writes the v10 layout; MaxContacts goes on the wire halved, so an odd count loses one.
+// ToBytes writes the v10 layout, with MaxContacts halved and capped at 510.
 func (r DeviceInfoResponse) ToBytes() []byte {
-	b := []byte{RespDeviceInfo, r.FirmwareVersion, byte(r.MaxContacts / 2), r.MaxChannels}
+	b := []byte{RespDeviceInfo, r.FirmwareVersion, byte(min(r.MaxContacts, 510) / 2), r.MaxChannels}
 	b = le32(b, r.BLEPin)
 	b = fixedStr(b, r.FirmwareBuildDate, 12)
 	b = fixedStr(b, r.Model, 40)
@@ -179,10 +179,10 @@ func (r CurrTimeResponse) ToBytes() []byte { return le32([]byte{RespCurrTime}, r
 
 func (NoMoreMessagesResponse) ToBytes() []byte { return []byte{RespNoMoreMessages} }
 
-// msgTail is the part of a message frame after the sender: path_len, txt_type, timestamp, signer prefix, text.
+// msgTail is the part of a message frame after the sender, with the text cut by bytes to fit MaxFrameSize.
 func msgTail(b []byte, pathLen, txtType byte, ts uint32, signer []byte, text string) []byte {
-	b = le32(append(b, pathLen, txtType), ts)
-	return append(append(b, signer...), text...)
+	b = append(le32(append(b, pathLen, txtType), ts), signer...)
+	return append(b, text[:max(0, min(len(text), MaxFrameSize-len(b)))]...)
 }
 
 func (r ContactMsgRecvResponse) ToBytes() []byte {

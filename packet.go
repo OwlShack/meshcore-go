@@ -45,7 +45,7 @@ func MakeHeader(routeType, payloadType, payloadVer byte) byte {
 	return (payloadVer << 6) | (payloadType << 2) | routeType
 }
 
-// MakePathLen encodes a path_len byte from bytes per hop (1 to 3) and hop count (0 to 63).
+// MakePathLen encodes a path_len byte from bytes per hop (1 to 3) and hop count (0 to 63), unchecked.
 func MakePathLen(hashSize, hashCount uint8) uint8 {
 	return (hashSize-1)<<6 | hashCount&63
 }
@@ -129,6 +129,9 @@ func PacketFromBytes(data []byte) (*Packet, error) {
 }
 
 func (p *Packet) ToBytes() ([]byte, error) {
+	if err := p.Validate(); err != nil {
+		return nil, err
+	}
 	buffer := bytes.NewBuffer(nil)
 
 	if err := binary.Write(buffer, binary.LittleEndian, p.Header); err != nil {
@@ -268,6 +271,11 @@ func (p *Packet) IsTransport() bool {
 	return rt == RouteTypeTransportFlood || rt == RouteTypeTransportDirect
 }
 
+// IsShare reports whether the packet carries transport codes {0, 0}, a zero-hop share meant to go nowhere.
+func (p *Packet) IsShare() bool {
+	return p.IsTransport() && p.TransportCode1 == 0 && p.TransportCode2 == 0
+}
+
 // AppendPathHash appends a path hash, returning false if the path is already full.
 func (p *Packet) AppendPathHash(hash []byte) bool {
 	hashSize, count := PathLenFields(p.PathLength)
@@ -275,7 +283,7 @@ func (p *Packet) AppendPathHash(hash []byte) bool {
 		return false
 	}
 	newCount := int(count) + 1
-	if newCount*int(hashSize) > MaxPathSize {
+	if newCount > MaxPathHashCount || newCount*int(hashSize) > MaxPathSize {
 		return false
 	}
 	// Path may alias the payload when parsed from a buffer; never grow in place.

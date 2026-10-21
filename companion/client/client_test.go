@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/sha512"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -1797,12 +1798,19 @@ func TestSetChannel(t *testing.T) {
 	mt.mu.Unlock()
 }
 
+// validPrvKey is an expanded private key that passes meshcore.ValidatePrivateKey.
+func validPrvKey() [64]byte {
+	k := sha512.Sum512([]byte{1})
+	k[0] &= 248
+	k[31] = k[31]&63 | 64
+	return k
+}
+
 func TestImportPrivateKey(t *testing.T) {
 	mt := &mockTransport{}
 	c := New(mt)
 
-	var key [64]byte
-	key[0] = 0x12
+	key := validPrvKey()
 
 	mt.onSend = func(_ []byte) {
 		go mt.fireResponse(companion.Response{Code: companion.RespOk, Data: companion.OkResponse{}})
@@ -1820,6 +1828,22 @@ func TestImportPrivateKey(t *testing.T) {
 		t.Errorf("command code = 0x%02x, want 0x%02x", mt.sent[0][0], companion.CmdImportPrivateKey)
 	}
 	mt.mu.Unlock()
+}
+
+func TestImportPrivateKeyRefusesInvalidKey(t *testing.T) {
+	mt := &mockTransport{}
+	c := New(mt)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := c.ImportPrivateKey(ctx, [64]byte{0x12}); !errors.Is(err, ErrInvalidPrivateKey) {
+		t.Fatalf("ImportPrivateKey err = %v, want ErrInvalidPrivateKey", err)
+	}
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+	if len(mt.sent) != 0 {
+		t.Errorf("sent %d frames, want none", len(mt.sent))
+	}
 }
 
 func TestSendLogin(t *testing.T) {
@@ -1999,7 +2023,7 @@ func TestSetFloodScope(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := c.SetFloodScope(ctx, []byte{0xAA, 0xBB, 0xCC}); err != nil {
+	if err := c.SetFloodScope(ctx, bytes.Repeat([]byte{0xAA}, 16)); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -2652,7 +2676,7 @@ func TestGetSelfTelemetry(t *testing.T) {
 		go mt.fireResponse(companion.Response{Code: companion.RespOk, Data: companion.OkResponse{}})
 	}
 	mt.mu.Unlock()
-	if err := c.ImportPrivateKey(ctx, [64]byte{}); err != nil {
+	if err := c.ImportPrivateKey(ctx, validPrvKey()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := c.GetSelfTelemetry(ctx); err == nil || len(mt.sent) != 3 {
@@ -2797,5 +2821,92 @@ func TestRunCLIUnsupported(t *testing.T) {
 	var devErr *DeviceError
 	if !errors.As(err, &devErr) || devErr.Code != companion.ErrCodeUnsupportedCmd {
 		t.Fatalf("err = %v, want DeviceError with code %d", err, companion.ErrCodeUnsupportedCmd)
+	}
+}
+
+func TestPrivateKeyRespDisabled(t *testing.T) {
+	mt := &mockTransport{}
+	c := New(mt)
+
+	mt.onSend = func(_ []byte) {
+		go mt.fireResponse(companion.Response{Code: companion.RespDisabled, Data: companion.DisabledResponse{}})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if _, err := c.ExportPrivateKey(ctx); !errors.Is(err, ErrDisabled) {
+		t.Fatalf("ExportPrivateKey err = %v, want ErrDisabled", err)
+	}
+	if err := c.ImportPrivateKey(ctx, validPrvKey()); !errors.Is(err, ErrDisabled) {
+		t.Fatalf("ImportPrivateKey err = %v, want ErrDisabled", err)
+	}
+}
+
+func TestFloodScopeRejectsBadArgs(t *testing.T) {
+	mt := &mockTransport{}
+	c := New(mt)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	key := make([]byte, 16)
+
+	if c.SetFloodScope(ctx, key[:3]) == nil {
+		t.Error("SetFloodScope took a 3-byte key")
+	}
+	if c.SetDefaultFloodScope(ctx, "", key) == nil {
+		t.Error("SetDefaultFloodScope took an empty name")
+	}
+	if c.SetDefaultFloodScope(ctx, strings.Repeat("s", 31), key) == nil {
+		t.Error("SetDefaultFloodScope took a 31-byte name")
+	}
+	if c.SetDefaultFloodScope(ctx, "s", key[:15]) == nil {
+		t.Error("SetDefaultFloodScope took a 15-byte key")
+	}
+	if len(mt.sent) != 0 {
+		t.Fatalf("sent %d frames, want none", len(mt.sent))
+	}
+}
+
+func TestSetTxPowerDBm(t *testing.T) {
+	mt := &mockTransport{}
+	c := New(mt)
+
+	mt.onSend = func(_ []byte) {
+		go mt.fireResponse(companion.Response{Code: companion.RespOk, Data: companion.OkResponse{}})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if err := c.SetTxPowerDBm(ctx, -9); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+	if got, want := hex.EncodeToString(mt.sent[0]), "0cf7"; got != want {
+		t.Errorf("frame = %s, want %s", got, want)
+	}
+}
+
+func TestSetAdvertNameCapsAt31Bytes(t *testing.T) {
+	mt := &mockTransport{}
+	c := New(mt)
+
+	mt.onSend = func(_ []byte) {
+		go mt.fireResponse(companion.Response{Code: companion.RespOk, Data: companion.OkResponse{}})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if err := c.SetAdvertName(ctx, strings.Repeat("a", 30)+"é"+"tail"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+	if got, want := string(mt.sent[0][1:]), strings.Repeat("a", 30); got != want {
+		t.Errorf("name = %q, want %q", got, want)
 	}
 }

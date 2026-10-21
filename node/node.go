@@ -24,9 +24,25 @@ var ErrTextTooLong = errors.New("text too long")
 
 type PacketHandler func(pkt *meshcore.Packet)
 
-// RetransmitDelayFunc returns the delay to apply before relaying a packet of
-// packetLen serialised bytes with the given estimated airtime.
+// RetransmitDelayFunc returns the relay delay from packetLen, the packet's path bytes plus payload plus 2, and that length's estimated airtime.
+//
+// Deprecated: use RelayDelayFunc, which receives the packet.
 type RetransmitDelayFunc func(packetLen int, estAirtimeMs uint32) time.Duration
+
+func (f RetransmitDelayFunc) relayDelay() RelayDelayFunc {
+	if f == nil {
+		return nil
+	}
+	return func(pkt *meshcore.Packet, estAirtimeMs uint32) time.Duration { return f(relayLen(pkt), estAirtimeMs) }
+}
+
+// RelayDelayFunc returns the delay before relaying pkt, given the estimated airtime of its path bytes plus payload plus 2.
+type RelayDelayFunc func(pkt *meshcore.Packet, estAirtimeMs uint32) time.Duration
+
+// relayLen is the path bytes plus payload plus 2 that relays are timed by.
+func relayLen(pkt *meshcore.Packet) int {
+	return 2 + len(pkt.Path) + len(pkt.Payload)
+}
 
 // RxDelayFunc returns how long to hold a received flood packet before routing it.
 type RxDelayFunc func(pkt *meshcore.Packet, packetLen int, estAirtimeMs uint32) time.Duration
@@ -66,9 +82,10 @@ type Node struct {
 	regions    *RegionMap
 	log        *slog.Logger
 	txCfg      nodeTxConfig
+	budget     *airtimeBudget
 
-	floodDelay  RetransmitDelayFunc
-	directDelay RetransmitDelayFunc
+	floodDelay  RelayDelayFunc
+	directDelay RelayDelayFunc
 	rxDelay     RxDelayFunc
 	inbound     chan *meshcore.Packet
 	extraAcks   func() uint8
@@ -78,6 +95,7 @@ type Node struct {
 	advertHashSize uint8
 
 	noReciprocalPath bool
+	noRegionGate     bool
 	noAirtimeWarned  atomic.Bool
 
 	clock   UniqueClock
@@ -103,6 +121,7 @@ type nodeConfig struct {
 	allowPacket      func(*meshcore.Packet) bool
 	floodFilter      func(*meshcore.Packet) bool
 	noReciprocalPath bool
+	noRegionGate     bool
 	maxPeers         int
 	learnedPathsOnly bool
 	advertData       *meshcore.AdvertAppData
@@ -113,8 +132,8 @@ type nodeConfig struct {
 	regions          []*meshcore.Region
 	defaultRegion    string
 	tx               nodeTxConfig
-	floodDelay       RetransmitDelayFunc
-	directDelay      RetransmitDelayFunc
+	floodDelay       RelayDelayFunc
+	directDelay      RelayDelayFunc
 	rxDelay          RxDelayFunc
 	extraAcks        func() uint8
 }
@@ -142,6 +161,7 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
+// WithAllowForwardHandler decides whether a packet may be relayed; floods are also scoped by region unless WithoutFloodRegionGate is set.
 func WithAllowForwardHandler(f func(*meshcore.Packet) bool) Option {
 	return func(c *nodeConfig) {
 		c.allowForward = f
@@ -165,6 +185,13 @@ func WithFloodFilterHandler(f func(*meshcore.Packet) bool) Option {
 func WithoutReciprocalPath() Option {
 	return func(c *nodeConfig) {
 		c.noReciprocalPath = true
+	}
+}
+
+// WithoutFloodRegionGate relays floods without checking Regions().FindFloodMatch first.
+func WithoutFloodRegionGate() Option {
+	return func(c *nodeConfig) {
+		c.noRegionGate = true
 	}
 }
 
@@ -252,17 +279,29 @@ func WithTxResult(f TxResultFunc) Option {
 	}
 }
 
-// WithFloodRetransmitDelay overrides the delay applied before a flood relay is
-// transmitted. Unset, the delay is FloodRetransmitDelay of the estimated airtime.
+// WithFloodRetransmitDelay overrides the flood relay delay.
+//
+// Deprecated: use WithFloodRelayDelay, which receives the packet.
 func WithFloodRetransmitDelay(f RetransmitDelayFunc) Option {
+	return WithFloodRelayDelay(f.relayDelay())
+}
+
+// WithDirectRetransmitDelay overrides the direct relay delay.
+//
+// Deprecated: use WithDirectRelayDelay, which receives the packet.
+func WithDirectRetransmitDelay(f RetransmitDelayFunc) Option {
+	return WithDirectRelayDelay(f.relayDelay())
+}
+
+// WithFloodRelayDelay overrides the flood relay delay, given the packet with our hash appended.
+func WithFloodRelayDelay(f RelayDelayFunc) Option {
 	return func(c *nodeConfig) {
 		c.floodDelay = f
 	}
 }
 
-// WithDirectRetransmitDelay overrides the delay applied before a direct relay is
-// transmitted. Unset, the delay is zero.
-func WithDirectRetransmitDelay(f RetransmitDelayFunc) Option {
+// WithDirectRelayDelay overrides the direct relay delay, given the packet with our hash still first in its path.
+func WithDirectRelayDelay(f RelayDelayFunc) Option {
 	return func(c *nodeConfig) {
 		c.directDelay = f
 	}
@@ -310,11 +349,8 @@ func New(identity meshcore.LocalIdentity, radio Radio, opts ...Option) *Node {
 	if src, ok := radio.(AirtimeSource); ok && cfg.tx.airtimeEstimator == nil {
 		cfg.tx.airtimeEstimator = src.EstAirtime
 	}
-	if cfg.floodDelay == nil {
-		cfg.floodDelay = func(_ int, estAirtimeMs uint32) time.Duration { return FloodRetransmitDelay(estAirtimeMs) }
-	}
 	if cfg.directDelay == nil {
-		cfg.directDelay = func(int, uint32) time.Duration { return 0 }
+		cfg.directDelay = func(*meshcore.Packet, uint32) time.Duration { return 0 }
 	}
 
 	n := &Node{
@@ -338,6 +374,7 @@ func New(identity meshcore.LocalIdentity, radio Radio, opts ...Option) *Node {
 		allowPacket:      cfg.allowPacket,
 		floodFilter:      cfg.floodFilter,
 		noReciprocalPath: cfg.noReciprocalPath,
+		noRegionGate:     cfg.noRegionGate,
 		handlers:         make(map[byte][]PacketHandler),
 		done:             make(chan struct{}),
 	}
@@ -362,7 +399,8 @@ func New(identity meshcore.LocalIdentity, radio Radio, opts ...Option) *Node {
 			WithQueuedRadioTxResult(n.txCfg.result),
 		}
 		if n.txCfg.airtimeEstimator != nil {
-			queuedOpts = append(queuedOpts, WithQueuedRadioAirtimeBudget(newAirtimeBudget(n.txCfg.airtimeFactor, n.txCfg.dutyCycleWindow, n.txCfg.airtimeEstimator)))
+			n.budget = newAirtimeBudget(n.txCfg.airtimeFactor, n.txCfg.dutyCycleWindow, n.txCfg.airtimeEstimator)
+			queuedOpts = append(queuedOpts, WithQueuedRadioAirtimeBudget(n.budget))
 		}
 		txRadio = NewQueuedRadio(radio, n.done, queuedOpts...)
 		n.radio = txRadio
@@ -375,8 +413,13 @@ func New(identity meshcore.LocalIdentity, radio Radio, opts ...Option) *Node {
 		}
 		return nil
 	}
-	n.router.floodDelay = func(l int) time.Duration { return n.floodDelay(l, n.estAirtime(l)) }
-	n.router.directDelay = func(l int) time.Duration { return n.directDelay(l, n.estAirtime(l)) }
+	n.router.floodDelay = func(p *meshcore.Packet) time.Duration {
+		if n.floodDelay == nil {
+			return FloodRetransmitDelay(n.estAirtime(rawLen(p)))
+		}
+		return n.floodDelay(p, n.estAirtime(relayLen(p)))
+	}
+	n.router.directDelay = func(p *meshcore.Packet) time.Duration { return n.directDelay(p, n.estAirtime(relayLen(p))) }
 
 	if n.rxDelay != nil {
 		n.inbound = make(chan *meshcore.Packet, inboundQueueSize)
@@ -477,6 +520,13 @@ func (n *Node) DecryptGroupData(pkt *meshcore.Packet) ([]byte, *meshcore.Channel
 	return n.channels.decryptGroupData(pkt)
 }
 
+// SetAirtimeFactor changes the airtime budget factor of a running Node; a RadioMux radio has its own.
+func (n *Node) SetAirtimeFactor(factor float64) {
+	if n.budget != nil {
+		n.budget.setFactor(factor)
+	}
+}
+
 func (n *Node) Regions() *RegionMap {
 	return n.regions
 }
@@ -499,6 +549,7 @@ func (n *Node) SetErrorHandler(h func(error)) {
 	n.cbMu.Unlock()
 }
 
+// SetAllowForwardHandler sets what decides whether a packet may be relayed; floods are also scoped by region unless WithoutFloodRegionGate is set.
 func (n *Node) SetAllowForwardHandler(f func(*meshcore.Packet) bool) {
 	n.cbMu.Lock()
 	n.allowForward = f

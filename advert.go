@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -26,6 +27,19 @@ func TruncateUTF8(s string, n int) string {
 		n--
 	}
 	return s[:n]
+}
+
+// validUTF8Prefix returns the longest prefix of s within n bytes that is valid UTF-8 with no NUL.
+func validUTF8Prefix(s string, n int) string {
+	i := 0
+	for i < len(s) {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == 0 || (r == utf8.RuneError && size == 1) || i+size > n {
+			break
+		}
+		i += size
+	}
+	return s[:i]
 }
 
 type AdvertAppData struct {
@@ -105,7 +119,7 @@ func (a *AdvertAppData) ToBytes() ([]byte, error) {
 		}
 	}
 
-	if name := TruncateUTF8(a.Name, MaxAdvertDataSize-buffer.Len()); name != "" {
+	if name := validUTF8Prefix(a.Name, MaxAdvertDataSize-buffer.Len()); name != "" {
 		buffer.Bytes()[0] |= AdvertNameMask
 		buffer.WriteString(name)
 	}
@@ -160,7 +174,7 @@ func AdvertAppDataFromBytes(data []byte) (*AdvertAppData, error) {
 	}
 
 	if flags&AdvertNameMask > 0 {
-		advertAppData.Name = buffer.String()
+		advertAppData.Name = string(cString(buffer.Bytes()))
 	}
 
 	return advertAppData, nil
@@ -271,7 +285,13 @@ func (a *Advert) ToBytes() ([]byte, error) {
 }
 
 // NewAdvert builds id's signed advert carrying data; firmware stamps it with the plain clock, not the unique one.
+// ErrInvalidAdvertName is returned by NewAdvert for a name that is not valid UTF-8 or contains NUL.
+var ErrInvalidAdvertName = errors.New("meshcore: advert name is not valid UTF-8 or contains NUL")
+
 func NewAdvert(id LocalIdentity, data AdvertAppData, timestamp uint32) (*Advert, error) {
+	if !utf8.ValidString(data.Name) || strings.IndexByte(data.Name, 0) >= 0 {
+		return nil, ErrInvalidAdvertName
+	}
 	app, err := data.ToBytes()
 	if err != nil {
 		return nil, err

@@ -114,3 +114,18 @@ func TestAirtimeBudget_NextTxDelay(t *testing.T) {
 		t.Error("empty budget: nextTxDelay should be positive")
 	}
 }
+
+func TestSetAirtimeFactor_Live(t *testing.T) {
+	n := New(seedIdentity(1), &mockRadio{}, WithAirtimeEstimator(func(int) uint32 { return 10 }))
+	defer n.Stop()
+	mux := NewRadioMux(&airtimeModem{ms: 90})
+	defer mux.Stop()
+
+	n.SetAirtimeFactor(9)
+	mux.SetAirtimeFactor(9)
+	for name, b := range map[string]*airtimeBudget{"node": n.budget, "mux": mux.tx.budget} {
+		if dc := b.dutyCycle(); dc < 0.099 || dc > 0.101 {
+			t.Errorf("%s dutyCycle = %f, want ~0.1", name, dc)
+		}
+	}
+}

@@ -12,6 +12,101 @@ tests, CI and tooling get no entry, however big the PR, and nothing lists what i
 `### Added`, `### Changed` and `### Fixed`, plus `### Upgrading` when users must change their
 code. `scripts/prepare-release.sh` renames the section for the release.
 
+## v1.10.0 - 2026-10-21
+
+Baseline `v1.9.0`. Synced to MeshCore firmware v1.18.0: relayed direct ACKs now wait the relay
+delay, and a transport flood with code 0 counts as unscoped. KISS requests no longer stall after the
+firmware drops a reply, and the codecs, companion client and device side refuse what firmware would.
+
+### Upgrading
+
+- **`Packet.ToBytes` now refuses a packet `Validate` rejects**: a reserved or oversized path, a
+  `Path` whose length does not match the path length byte, or a payload over 184 bytes. Packets
+  built by hand must set both path fields consistently.
+
+### Added
+
+- **`node.WithoutFloodRegionGate` relays floods of any region**, as a firmware companion with repeat
+  on does. By default a node still refuses to relay a flood that `Regions().FindFloodMatch` does not
+  match, as a firmware repeater does.
+- **`node.WithFloodRelayDelay` and `node.WithDirectRelayDelay` give a relay delay hook the packet
+  itself**, as firmware's `getRetransmitDelay` and `getDirectRetransmitDelay` get it, so a role
+  formula can use the route, type or path. The flood hook sees our hash already appended, the
+  direct hook the packet as received.
+- **`Node.SetAirtimeFactor` and `RadioMux.SetAirtimeFactor` change the airtime budget factor while
+  running**, as firmware's `set af` does.
+- **`meshcore.ValidatePrivateKey` applies firmware's import checks** to an expanded private key: no
+  reserved prefix, a clamped scalar and a working key exchange. `NewLocalIdentityFromExpandedKey`
+  still loads keys unchecked, as firmware loads its stored identity. `IsReservedPrefix` reports a
+  0x00 or 0xFF prefix. On the device side, `ImportPrivateKeyCommand.Validate` gives the
+  ILLEGAL_ARG `*CommandError` firmware answers for a key that fails it; a host with import
+  disabled answers `DisabledResponse` first. `client.ImportPrivateKey` returns
+  `client.ErrInvalidPrivateKey` without sending.
+- **`client.(*Client).SetTxPowerDBm`, `SelfInfoResponse.TxPowerDBm` and `NewSetTxPowerCommand`
+  handle negative transmit power** down to -9 dBm, which firmware stores as signed.
+- **`companion.NewDeviceFrameParser` reads frames at the device end of the link**: it takes only
+  app-to-radio (`<`) frames and skips frames over 176 bytes, as firmware does. Set
+  `FrameParser.OnDiscard` on either parser to hear about skipped bytes, as `ErrNoFrameStart` or
+  `ErrFrameTooLarge`.
+- **`sx12xx.Opts.SX1268` selects the SX1268 transmit power table**, so SX1268 boards (E22-400 and
+  similar) transmit at the power they are set to. **`sx12xx.Opts.CurrentLimit`** sets the PA
+  over-current limit in mA to match a board's `SX126X_CURRENT_LIMIT`; zero keeps 140 mA.
+- **Firmware constants and helpers**: `companion.FirmwareVerCode` (14) and `FirmwareVersion`
+  (`v1.18.0`), `DefaultTCPPort`, `DefaultBaudRate`, `TelemMode*`, `AdvertLoc*`, `MaxSignDataLen`
+  and `MaxChannelDataLen`; `meshcore.PayloadVer1` to `PayloadVer4`, `MaxHashSize`,
+  `MaxPathHashCount`, `PrvKeySize`, `SeedSize`, `CipherBlockSize`, `CipherMACSize`,
+  `ControlZeroHopFlag`, the sensor ACL bits `PermRecvAlertsLo` and `PermRecvAlertsHi`,
+  `Packet.IsShare` for the {0,0} transport codes, and `IsGroupDataTypeReserved` and
+  `IsGroupDataTypeDev` for the GRP_DATA number ranges.
+
+### Changed
+
+- **Relayed direct packets and ACKs wait one relay delay, worked out once on the packet as
+  received**, as firmware v1.18.0 does. A relayed ACK went out at once before; extra ACK copies now
+  go 300 ms apart after that delay, with the ACK itself last.
+- **A transport flood with code 0 counts as unscoped**, as in firmware v1.18.0: `FindFloodMatch`
+  returns the wildcard even when it denies floods, and replies go out unscoped.
+- **The deprecated `WithFloodRetransmitDelay` and `WithDirectRetransmitDelay` hooks get path bytes
+  plus payload plus 2 as the length**, as firmware roles use, without the 4 transport code bytes.
+- **`GenerateLocalIdentity` regenerates a key whose prefix is 0x00 or 0xFF**, as every firmware role
+  does.
+- **`NewRequest`, `NewResponse`, `NewTextMessage`, `NewPath`, `NewAnonReq` and `NewGroupData` return
+  an error when the plaintext cannot fit in one packet**, at firmware's limits.
+- **`MultiPartFromBytes` rejects payloads of 2 bytes or fewer and wrapped ACKs under 5 bytes**, and
+  `MultiPart.ToBytes` errors when `Remaining` is over 15 instead of wrapping it.
+- **`SetFloodScope` rejects a key that is not 0 or 16 bytes, and `SetDefaultFloodScope` an empty or
+  over-30-byte name or a key that is not 16 bytes**, where both used to send a clear silently. Use
+  `ClearDefaultFloodScope` to clear.
+- **`SetAdvertName` cuts names to firmware's 31 bytes** on a character boundary.
+- **A serial `BaudRate` of 0 opens at 115200**, the firmware rate, in both transport modules,
+  instead of 9600.
+- **KISS `SetRadio` and `SetRadioWait` accept coding rate 1 to 4 as well as 5 to 8**, as the rest of
+  the library does, instead of sending a value the radio ignores. `RadioConfiguration` and
+  `TxPowerLevel` return what was last requested, which the radio may have adjusted.
+- **`client.SetTxPower(byte)` is deprecated**; use `SetTxPowerDBm`.
+
+### Fixed
+
+- **A flood or direct ACK answering one of our own messages is no longer relayed.**
+- **A flood that already has 63 hops is no longer relayed, and `Packet.AppendPathHash` refuses a
+  64th hop**, which the 6-bit hop count cannot hold.
+- **KISS requests no longer stall after the firmware drops a reply under load.** The next OK or
+  error now reaches the request waiting for it, where `SetRadioWait`, `SetTxPowerWait`,
+  `RebootWait` and error-answered requests used to time out until a typed reply arrived.
+- **With KISS signal reports on, a packet whose signal report never arrives is delivered as soon as
+  the next frame arrives**, not after a timeout that skewed flood receive delays.
+- **`ExportPrivateKey` and `ImportPrivateKey` return `client.ErrDisabled` at once** on firmware
+  built without key export or import, instead of waiting for the context to time out.
+- **Device-side message responses cut long text, and `SelfInfo` the node name to 31 bytes**, so the
+  frame fits in 176 bytes as firmware's does, instead of being refused and the message lost.
+- **`DeviceInfoResponse.ToBytes` no longer wraps the contact count** when `MaxContacts` is over 510.
+- **Advert names stop at the first NUL when decoded, and at the first NUL or invalid UTF-8 sequence
+  when encoded**, as firmware handles them. `NewAdvert` returns `ErrInvalidAdvertName` for such a
+  name instead of sending an advert with it cut or missing.
+- **sx12xx clamps the stored noise floor at -120 dBm**, as firmware does, so the interference
+  threshold no longer treats quiet channels as busy, and **frequencies outside the standard bands
+  get image calibration around the actual frequency**, as RadioLib does.
+
 ## v1.9.0 - 2026-10-13
 
 Baseline `v1.8.0`. A Go program can now be the companion device the MeshCore app connects to. DMs

@@ -25,8 +25,8 @@ type router struct {
 	stats routeCounters
 
 	send        func(data []byte, priority uint8, delay time.Duration) error
-	floodDelay  func(dataLen int) time.Duration
-	directDelay func(dataLen int) time.Duration
+	floodDelay  func(pkt *meshcore.Packet) time.Duration
+	directDelay func(pkt *meshcore.Packet) time.Duration
 }
 
 // extraAckSpacing is the fixed gap firmware leaves between copies of a relayed direct ACK.
@@ -98,18 +98,19 @@ func (r *router) routeDirect(pkt *meshcore.Packet) RouteAction {
 	}
 
 	if r.node.Identity().IsHashMatch(hashes[0]) && r.canForward(pkt) {
+		d := r.relayDelay(r.directDelay, pkt)
 		if pkt.PayloadType() == meshcore.PayloadTypeMultiPart {
-			return r.forwardMultipartDirect(pkt)
+			return r.forwardMultipartDirect(pkt, d)
 		}
-		if pkt.IsMarkedDoNotRetransmit() || r.seen(pkt) {
+		if r.seen(pkt) || pkt.IsMarkedDoNotRetransmit() {
 			return RouteActionDrop
 		}
 		pkt.RemoveFirstPathHash()
 		r.stats.directRelays.Add(1)
 		if pkt.PayloadType() == meshcore.PayloadTypeAck {
-			r.routeDirectRecvAcks(pkt, 0)
+			r.routeDirectRecvAcks(pkt, d)
 		} else {
-			r.forward(pkt, PriorityDirectRelay, r.directDelay, 0)
+			r.forward(pkt, PriorityDirectRelay, nil, d)
 		}
 		return RouteActionForward
 	}
@@ -176,14 +177,14 @@ func unwrapMultiAck(pkt *meshcore.Packet) (inner *meshcore.Packet, remaining uin
 }
 
 // forwardMultipartDirect relays the ACK carried by a direct multipart packet.
-func (r *router) forwardMultipartDirect(pkt *meshcore.Packet) RouteAction {
+func (r *router) forwardMultipartDirect(pkt *meshcore.Packet, delay time.Duration) RouteAction {
 	inner, remaining, ok := unwrapMultiAck(pkt)
 	if !ok || r.seen(inner) {
 		return RouteActionDrop
 	}
 	inner.RemoveFirstPathHash()
 	r.stats.directRelays.Add(1)
-	r.routeDirectRecvAcks(inner, time.Duration(remaining+1)*extraAckSpacing)
+	r.routeDirectRecvAcks(inner, delay+time.Duration(remaining+1)*extraAckSpacing)
 	return RouteActionForward
 }
 
@@ -193,9 +194,7 @@ func (r *router) routeDirectRecvAcks(pkt *meshcore.Packet, delay time.Duration) 
 	if pkt.IsMarkedDoNotRetransmit() {
 		return
 	}
-	ackLen := 2 + len(pkt.Path) + len(pkt.Payload)
 	for extra := r.extraAckCount(); extra > 0; extra-- {
-		delay += r.relayDelay(r.directDelay, ackLen) + extraAckSpacing
 		mp := meshcore.MultiPart{Remaining: extra, WrappedType: meshcore.PayloadTypeAck, WrappedPayload: pkt.Payload}
 		payload, err := mp.ToBytes()
 		if err != nil {
@@ -203,6 +202,7 @@ func (r *router) routeDirectRecvAcks(pkt *meshcore.Packet, delay time.Duration) 
 			continue
 		}
 		r.forwardAck(pkt, meshcore.PayloadTypeMultiPart, payload, delay)
+		delay += extraAckSpacing
 	}
 	r.forwardAck(pkt, meshcore.PayloadTypeAck, pkt.Payload, delay)
 }
@@ -232,11 +232,11 @@ func (r *router) relayFlood(pkt *meshcore.Packet) {
 
 	hashSize := int(pkt.PathHashSize())
 	newCount := int(pkt.PathHashCount()) + 1
-	if newCount*hashSize > meshcore.MaxPathSize {
+	if newCount > meshcore.MaxPathHashCount || newCount*hashSize > meshcore.MaxPathSize {
 		return
 	}
 
-	if r.node.regions.FindFloodMatch(pkt) == nil || !r.canForward(pkt) {
+	if !r.node.noRegionGate && r.node.regions.FindFloodMatch(pkt) == nil || !r.canForward(pkt) {
 		return
 	}
 
@@ -284,21 +284,21 @@ func (r *router) canForward(pkt *meshcore.Packet) bool {
 	return f(pkt)
 }
 
-func (r *router) relayDelay(f func(int) time.Duration, dataLen int) time.Duration {
+func (r *router) relayDelay(f func(*meshcore.Packet) time.Duration, pkt *meshcore.Packet) time.Duration {
 	if f == nil {
 		return 0
 	}
-	return f(dataLen)
+	return f(pkt)
 }
 
-// forward transmits pkt at priority, delayed by delayFor(len)+extra.
-func (r *router) forward(pkt *meshcore.Packet, priority uint8, delayFor func(int) time.Duration, extra time.Duration) {
+// forward transmits pkt at priority, delayed by delayFor(pkt)+extra.
+func (r *router) forward(pkt *meshcore.Packet, priority uint8, delayFor func(*meshcore.Packet) time.Duration, extra time.Duration) {
 	if r.send == nil {
 		return
 	}
 	data, err := pkt.ToBytes()
 	if err == nil {
-		err = r.send(data, priority, r.relayDelay(delayFor, len(data))+extra)
+		err = r.send(data, priority, r.relayDelay(delayFor, pkt)+extra)
 	}
 	if err != nil {
 		r.node.dispatchError(err)

@@ -372,7 +372,7 @@ func (m *Modem) NoiseFloor() (float64, bool) {
 	if floor == 0 {
 		return 0, false
 	}
-	return float64(max(floor, noiseFloorFloorDBm)), true
+	return float64(floor), true
 }
 
 // SetDataHandler sets the callback for received packets.
@@ -557,7 +557,7 @@ func (m *Modem) sampleNoiseFloor() {
 			m.noiseFloor.Store(0)
 			continue
 		}
-		m.noiseFloor.Store(int64(sum / float64(taken)))
+		m.noiseFloor.Store(max(int64(sum/float64(taken)), noiseFloorFloorDBm))
 
 		select {
 		case <-time.After(m.cfg.noiseInterval):

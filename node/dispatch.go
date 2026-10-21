@@ -117,7 +117,9 @@ func (n *Node) handleMultiPartACK(pkt *meshcore.Packet) {
 	if !ok || n.router.dedup.HasSeen(inner) {
 		return
 	}
-	n.acks.handleACK(inner)
+	if n.acks.handleACK(inner) {
+		pkt.MarkDoNotRetransmit()
+	}
 }
 
 func (n *Node) handleAdvert(pkt *meshcore.Packet) {

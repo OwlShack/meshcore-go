@@ -300,3 +300,38 @@ func hexBytes(t *testing.T, s string) []byte {
 	}
 	return b
 }
+
+func TestDeviceFrameParser(t *testing.T) {
+	big := append([]byte{FrameTypeOutgoing, MaxFrameSize + 1, 0}, make([]byte, MaxFrameSize+1)...)
+	in := append([]byte{FrameTypeIncoming, 1, 0, 0x05}, big...)
+	in = append(in, FrameTypeOutgoing, 1, 0, 0x16)
+
+	got := NewDeviceFrameParser().Feed(in)
+	if want := []Frame{{Type: FrameTypeOutgoing, Data: []byte{0x16}}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("device parser got %v, want %v", got, want)
+	}
+	if got := NewFrameParser().Feed(in); len(got) != 3 {
+		t.Fatalf("default parser got %d frames, want 3", len(got))
+	}
+}
+
+func TestFrameParserOnDiscard(t *testing.T) {
+	big := append([]byte{FrameTypeOutgoing, MaxFrameSize + 1, 0}, make([]byte, MaxFrameSize+1)...)
+	in := append([]byte{FrameTypeIncoming, 1, 0, 0x05}, big...)
+	in = append(in, FrameTypeOutgoing, 1, 0, 0x16, 0x99, 0x99, 0x99)
+
+	var got []string
+	p := NewDeviceFrameParser()
+	p.OnDiscard = func(err error) { got = append(got, err.Error()) }
+	if frames := p.Feed(in); len(frames) != 1 {
+		t.Fatalf("got %d frames, want 1", len(frames))
+	}
+	want := []string{
+		ErrNoFrameStart.Error() + ": 4 bytes skipped",
+		ErrFrameTooLarge.Error() + ": 180 bytes skipped",
+		ErrNoFrameStart.Error() + ": 1 bytes skipped",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("discards %q, want %q", got, want)
+	}
+}

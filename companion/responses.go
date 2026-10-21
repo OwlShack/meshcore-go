@@ -80,6 +80,9 @@ func (r SelfInfoResponse) Identity() meshcore.Identity {
 	return meshcore.NewIdentity(r.PublicKey)
 }
 
+// TxPowerDBm is TxPower read as signed dBm.
+func (r SelfInfoResponse) TxPowerDBm() int8 { return int8(r.TxPower) }
+
 // DeviceInfoResponse is the reply to CMD_DEVICE_QUERY.
 type DeviceInfoResponse struct {
 	FirmwareVersion    byte // FIRMWARE_VER_CODE

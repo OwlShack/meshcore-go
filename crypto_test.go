@@ -657,3 +657,32 @@ func TestEncryptedPayloads_BadMACContract(t *testing.T) {
 		t.Errorf("empty GroupText.DecryptStruct error = %v, want ErrTooShort", err)
 	}
 }
+
+func TestConstructorsRefuseOversizedPlaintext(t *testing.T) {
+	var a, b [ed25519.SeedSize]byte
+	b[0] = 1
+	self, peer := NewLocalIdentityFromSeed(a), NewLocalIdentityFromSeed(b).Identity
+	key := make([]byte, 32)
+	tests := []struct {
+		name string
+		max  int
+		make func(plain []byte) error
+	}{
+		{"NewRequest", 167, func(p []byte) error { _, err := NewRequest(self, peer, p, key); return err }},
+		{"NewResponse", 167, func(p []byte) error { _, err := NewResponse(self, peer, p, key); return err }},
+		{"NewTextMessage", 167, func(p []byte) error { _, err := NewTextMessage(self, peer, p, key); return err }},
+		{"NewPath", 167, func(p []byte) error { _, err := NewPath(self, peer, p, key); return err }},
+		{"NewAnonReq", 136, func(p []byte) error { _, err := NewAnonReq(self, peer, p, key); return err }},
+		{"NewGroupData", 168, func(p []byte) error { _, err := NewGroupData(0x11, key[:16], p); return err }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.make(make([]byte, tt.max)); err != nil {
+				t.Fatalf("%d bytes refused: %v", tt.max, err)
+			}
+			if err := tt.make(make([]byte, tt.max+1)); err == nil {
+				t.Fatalf("%d bytes accepted", tt.max+1)
+			}
+		})
+	}
+}

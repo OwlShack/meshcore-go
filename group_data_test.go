@@ -311,3 +311,17 @@ func TestGroupDataPayloadLimits(t *testing.T) {
 		t.Fatal("2-byte payload parsed")
 	}
 }
+
+func TestGroupDataTypeRanges(t *testing.T) {
+	for _, tt := range []struct {
+		t             uint16
+		reserved, dev bool
+	}{
+		{0x0000, true, false}, {0x00FF, true, false}, {0x0100, false, false},
+		{0xFEFF, false, false}, {0xFF00, false, true}, {0xFFFF, false, true},
+	} {
+		if IsGroupDataTypeReserved(tt.t) != tt.reserved || IsGroupDataTypeDev(tt.t) != tt.dev {
+			t.Errorf("0x%04X: reserved %v dev %v, want %v %v", tt.t, IsGroupDataTypeReserved(tt.t), IsGroupDataTypeDev(tt.t), tt.reserved, tt.dev)
+		}
+	}
+}

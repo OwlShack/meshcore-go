@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+
+	"filippo.io/edwards25519"
 )
 
 // PathHashSize is the number of leading public-key bytes used as a compact identity hash.
@@ -109,13 +112,21 @@ type LocalIdentity struct {
 	expanded []byte // 64-byte expanded key (clamped scalar ‖ prefix); nil for seed-based identities
 }
 
-// GenerateLocalIdentity creates a random LocalIdentity from the given randomness source.
+// IsReservedPrefix reports whether a public key's first byte is the reserved 0x00 or 0xFF.
+func IsReservedPrefix(b byte) bool { return b == 0x00 || b == 0xFF }
+
+// GenerateLocalIdentity creates a random LocalIdentity from the given randomness source, regenerating until the key's prefix is not reserved.
 func GenerateLocalIdentity(rand io.Reader) (LocalIdentity, error) {
-	pub, priv, err := ed25519.GenerateKey(rand)
-	if err != nil {
-		return LocalIdentity{}, fmt.Errorf("generating keypair: %w", err)
+	for range 64 {
+		pub, priv, err := ed25519.GenerateKey(rand)
+		if err != nil {
+			return LocalIdentity{}, fmt.Errorf("generating keypair: %w", err)
+		}
+		if !IsReservedPrefix(pub[0]) {
+			return localIdentityFromStdKey(pub, priv), nil
+		}
 	}
-	return localIdentityFromStdKey(pub, priv), nil
+	return LocalIdentity{}, errors.New("generating keypair: randomness source keeps giving reserved 0x00/0xFF prefixes")
 }
 
 // NewLocalIdentityFromSeed creates a deterministic LocalIdentity from a 32-byte Ed25519 seed.
@@ -136,6 +147,7 @@ func NewLocalIdentityFromPrivateKey(privKey ed25519.PrivateKey) (LocalIdentity, 
 
 // NewLocalIdentityFromExpandedKey creates a LocalIdentity from a 64-byte
 // expanded private key (clamped scalar ‖ prefix), the prv.key format.
+// It does not validate the key; check imported keys with ValidatePrivateKey.
 func NewLocalIdentityFromExpandedKey(prv []byte) (LocalIdentity, error) {
 	if len(prv) != ed25519.PrivateKeySize {
 		return LocalIdentity{}, fmt.Errorf("expanded private key must be %d bytes, got %d", ed25519.PrivateKeySize, len(prv))
@@ -187,4 +199,42 @@ func (li LocalIdentity) X25519PrivateKey() []byte {
 		return bytes.Clone(li.expanded[:32])
 	}
 	return edPrivateToX25519(li.seed[:])
+}
+
+// validationTestPrv and validationTestPub are a known good keypair for the ECDH check.
+var (
+	validationTestPrv = []byte{
+		0x70, 0x65, 0xe1, 0x8f, 0xd9, 0xfa, 0xbb, 0x70, 0xc1, 0xed, 0x90, 0xdc, 0xa1, 0x99, 0x07, 0xde,
+		0x69, 0x8c, 0x88, 0xb7, 0x09, 0xea, 0x14, 0x6e, 0xaf, 0xd9, 0x3d, 0x9b, 0x83, 0x0c, 0x7b, 0x60,
+		0xc4, 0x68, 0x11, 0x93, 0xc7, 0x9b, 0xbc, 0x39, 0x94, 0x5b, 0xa8, 0x06, 0x41, 0x04, 0xbb, 0x61,
+		0x8f, 0x8f, 0xd7, 0xa8, 0x4a, 0x0a, 0xf6, 0xf5, 0x70, 0x33, 0xd6, 0xe8, 0xdd, 0xcd, 0x64, 0x71,
+	}
+	validationTestPub = []byte{
+		0x1e, 0xc7, 0x71, 0x75, 0xb0, 0x91, 0x8e, 0xd2, 0x06, 0xf9, 0xae, 0x04, 0xec, 0x13, 0x6d, 0x6d,
+		0x5d, 0x43, 0x15, 0xbb, 0x26, 0x30, 0x54, 0x27, 0xf6, 0x45, 0xb4, 0x92, 0xe9, 0x35, 0x0c, 0x10,
+	}
+)
+
+// ValidatePrivateKey reports whether prv, a 64-byte expanded private key, has an unreserved prefix, a clamped scalar and a working ECDH.
+func ValidatePrivateKey(prv []byte) bool {
+	if len(prv) != PrvKeySize {
+		return false
+	}
+	var wide [64]byte
+	copy(wide[:], prv[:32])
+	a, _ := edwards25519.NewScalar().SetUniformBytes(wide[:])
+	pub := new(edwards25519.Point).ScalarBaseMult(a).Bytes()
+	if IsReservedPrefix(pub[0]) {
+		return false
+	}
+	// X25519 clamps the scalar but pub used it raw, so only a clamped key gives matching secrets.
+	ss1, err := sharedSecretFromScalar(prv[:32], validationTestPub)
+	if err != nil {
+		return false
+	}
+	ss2, err := sharedSecretFromScalar(validationTestPrv[:32], pub)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(ss1, ss2)
 }

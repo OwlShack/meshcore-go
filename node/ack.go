@@ -72,15 +72,16 @@ func (at *ackTracker) cancel(crc uint32) {
 	at.mu.Unlock()
 }
 
-func (at *ackTracker) handleACK(pkt *meshcore.Packet) {
-	if len(pkt.Payload) < 4 {
-		return
+// handleACK reports whether pkt acknowledged a pending send, marking it not to be relayed.
+func (at *ackTracker) handleACK(pkt *meshcore.Packet) bool {
+	if len(pkt.Payload) < 4 || !at.notifyCRC(binary.LittleEndian.Uint32(pkt.Payload[:4])) {
+		return false
 	}
-	crc := binary.LittleEndian.Uint32(pkt.Payload[:4])
-	at.notifyCRC(crc)
+	pkt.MarkDoNotRetransmit()
+	return true
 }
 
-func (at *ackTracker) notifyCRC(crc uint32) {
+func (at *ackTracker) notifyCRC(crc uint32) bool {
 	at.mu.Lock()
 	p, ok := at.pending[crc]
 	if ok {
@@ -91,6 +92,7 @@ func (at *ackTracker) notifyCRC(crc uint32) {
 	if ok && p.onACK != nil {
 		p.onACK(time.Since(p.sentAt))
 	}
+	return ok
 }
 
 func (at *ackTracker) sweepLoop() {

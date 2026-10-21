@@ -33,6 +33,45 @@ func TestNode_FloodConsumedNotRelayed(t *testing.T) {
 	}
 }
 
+func TestNode_ACKForUsNotRelayed(t *testing.T) {
+	id, other := seedIdentity(0x01), seedIdentity(0x02)
+	crc := []byte{0x11, 0x22, 0x33, 0x44}
+	cases := map[string][]byte{
+		"flood":     makeFloodPacket(meshcore.PayloadTypeAck, crc),
+		"direct":    makeDirectPacket(meshcore.PayloadTypeAck, []byte{id.Hash()[0], other.Hash()[0]}, crc),
+		"multipart": multiAckDirect(nil, crc, 0),
+	}
+	for name, data := range cases {
+		t.Run(name, func(t *testing.T) {
+			radio := &mockRadio{}
+			n := New(id, radio, WithAllowForwardHandler(func(*meshcore.Packet) bool { return true }))
+			defer n.Stop()
+			var delivered, marked bool
+			mark := func(p *meshcore.Packet) { delivered, marked = true, p.IsMarkedDoNotRetransmit() }
+			n.OnPacket(meshcore.PayloadTypeAck, mark)
+			n.OnPacket(meshcore.PayloadTypeMultiPart, mark)
+
+			acked := make(chan struct{}, 1)
+			n.ExpectACK(binary.LittleEndian.Uint32(crc), time.Minute, func(time.Duration) { acked <- struct{}{} }, nil)
+			radio.inject(data)
+			radio.inject(data)
+			time.Sleep(100 * time.Millisecond)
+
+			select {
+			case <-acked:
+			default:
+				t.Fatal("ACK not matched")
+			}
+			if got := len(radio.sentData()); got != 0 {
+				t.Fatalf("sends = %d, want 0 (ACK was ours, and its repeat a duplicate)", got)
+			}
+			if delivered && !marked {
+				t.Fatal("delivered ACK not marked do-not-retransmit")
+			}
+		})
+	}
+}
+
 func TestNode_FloodRelayedWhenNotConsumed(t *testing.T) {
 	radio := &mockRadio{}
 	n := New(seedIdentity(0x01), radio, WithAllowForwardHandler(func(*meshcore.Packet) bool { return true }))

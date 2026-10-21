@@ -34,6 +34,14 @@ const (
 	PayloadTypeRawCustom byte = 0x0F // custom packet as raw bytes, for applications with custom encryption, payloads, etc
 )
 
+// Payload versions, the top two header bits; only PayloadVer1 is in use.
+const (
+	PayloadVer1 byte = 0x00 // 1-byte src/dest hashes, 2-byte MAC
+	PayloadVer2 byte = 0x01
+	PayloadVer3 byte = 0x02
+	PayloadVer4 byte = 0x03
+)
+
 // Advert types.
 const (
 	AdvertTypeNone     byte = 0
@@ -53,11 +61,17 @@ const (
 
 // Protocol size limits.
 const (
+	MaxHashSize       = 8
 	PubKeySize        = 32
+	PrvKeySize        = 64
+	SeedSize          = 32
 	SignatureSize     = 64
+	CipherBlockSize   = 16
+	CipherMACSize     = 2
 	MaxAdvertDataSize = 32
 	MaxPacketPayload  = 184
 	MaxPathSize       = 64
+	MaxPathHashCount  = 63 // the 6-bit hop count in path_len
 	MaxTransUnit      = 255
 	MaxTextLen        = 10 * 16        // 10 * CIPHER_BLOCK_SIZE = 160 bytes
 	MaxRetryTextLen   = MaxTextLen - 2 // longest text a DM attempt above 3 can carry, after its 2-byte tail
@@ -94,6 +108,9 @@ const (
 	PermACLReadWrite byte = 2
 	PermACLAdmin     byte = 3
 	PermACLRoleMask  byte = 3
+
+	PermRecvAlertsLo byte = 0x40 // sensor: low priority alerts
+	PermRecvAlertsHi byte = 0x80 // sensor: high priority alerts
 )
 
 // Text message types (firmware TXT_TYPE_*), carried in the upper six bits of a TXT_MSG's flags byte.

@@ -5,9 +5,11 @@ import (
 	"crypto/ed25519"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestAdvertFromBytes(t *testing.T) {
@@ -715,6 +717,8 @@ func FuzzAdvertFromBytes(f *testing.F) {
 		"", "00",
 		// flags 0xF0: latlon, feat1, feat2 and name set, with feat2 zero-valued
 		strings.Repeat("30", 100) + "f0" + strings.Repeat("30", 10) + "0000" + "30",
+		// name starting with an invalid UTF-8 byte
+		strings.Repeat("30", 100) + "818d30",
 	} {
 		b, _ := hex.DecodeString(h)
 		f.Add(b)
@@ -745,8 +749,19 @@ func FuzzAdvertFromBytes(f *testing.F) {
 		if err != nil {
 			t.Fatalf("re-decode %x: %v", raw, err)
 		}
-		if !reflect.DeepEqual(*again, ad) {
-			t.Fatalf("app data drift:\n raw   %x -> %+v\n again %x -> %+v", adv.RawAppData, ad, raw, *again)
+		if utf8.ValidString(ad.Name) {
+			if !reflect.DeepEqual(*again, ad) {
+				t.Fatalf("app data drift:\n raw   %x -> %+v\n again %x -> %+v", adv.RawAppData, ad, raw, *again)
+			}
+			return
+		}
+		// An invalid UTF-8 name tail is dropped on encode, so only the second pass must be stable.
+		raw2, err := again.ToBytes()
+		if err != nil {
+			t.Fatalf("re-encode %x: %v", raw, err)
+		}
+		if !bytes.Equal(raw2, raw) {
+			t.Fatalf("app data drift:\n raw   %x -> %+v\n again %x -> %+v\n raw2  %x", adv.RawAppData, ad, raw, *again, raw2)
 		}
 	})
 }
@@ -830,5 +845,49 @@ func TestNewAdvert(t *testing.T) {
 	}
 	if _, err := NewAdvert(id, AdvertAppData{RawType: 0x10}, 1); err == nil {
 		t.Fatal("bad app data accepted")
+	}
+}
+
+func TestAdvertAppDataNameStopsAtNUL(t *testing.T) {
+	ad, err := AdvertAppDataFromBytes(append([]byte{AdvertTypeChat | AdvertNameMask}, "abc\x00def"...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ad.Name != "abc" {
+		t.Fatalf("Name = %q, want %q", ad.Name, "abc")
+	}
+}
+
+func TestAdvertAppDataEncodesValidUTF8NamePrefix(t *testing.T) {
+	tests := []struct{ name, in, want string }{
+		{"NUL", "ab\x00cd", "ab"},
+		{"invalid byte", "ab\xffcd", "ab"},
+		{"overlong", "ab\xc0\xafcd", "ab"},
+		{"surrogate", "ab\xed\xa0\x80cd", "ab"},
+		{"above U+10FFFF", "ab\xf4\x90\x80\x80cd", "ab"},
+		{"valid multibyte", "añ😀", "añ😀"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, err := (&AdvertAppData{Type: "CHAT", Name: tt.in}).ToBytes()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := string(b[1:]); got != tt.want {
+				t.Fatalf("encoded name %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewAdvertRejectsInvalidName(t *testing.T) {
+	id := NewLocalIdentityFromSeed([32]byte{1})
+	for _, name := range []string{"ab\x00cd", "ab\xffcd"} {
+		if _, err := NewAdvert(id, AdvertAppData{Type: "CHAT", Name: name}, 1); !errors.Is(err, ErrInvalidAdvertName) {
+			t.Errorf("NewAdvert(%q) error = %v, want ErrInvalidAdvertName", name, err)
+		}
+	}
+	if _, err := NewAdvert(id, AdvertAppData{Type: "CHAT", Name: "añ😀"}, 1); err != nil {
+		t.Errorf("NewAdvert(valid) error = %v", err)
 	}
 }

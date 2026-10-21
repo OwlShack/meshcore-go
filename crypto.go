@@ -14,7 +14,7 @@ import (
 
 const (
 	cipherKeySize = 16 // AES-128
-	cipherMACSize = 2  // truncated HMAC
+	cipherMACSize = CipherMACSize
 )
 
 var (
@@ -195,8 +195,19 @@ func MACThenDecrypt(sharedSecret []byte, src []byte) ([]byte, error) {
 	return Decrypt(sharedSecret, src[cipherMACSize:])
 }
 
-// macEncrypt is EncryptThenMAC split into MAC and ciphertext fields.
-func macEncrypt(key, plain []byte) (mac [2]byte, enc []byte, err error) {
+// checkPlaintextLen refuses plaintext that, padded to a block after header bytes, does not fit a packet.
+func checkPlaintextLen(plain []byte, header int) error {
+	if header+len(plain)+CipherBlockSize-1 > MaxPacketPayload {
+		return fmt.Errorf("meshcore: plaintext of %d bytes is too long for one packet", len(plain))
+	}
+	return nil
+}
+
+// macEncrypt is EncryptThenMAC split into MAC and ciphertext fields, refusing plaintext too long for a packet.
+func macEncrypt(key, plain []byte, header int) (mac [2]byte, enc []byte, err error) {
+	if err := checkPlaintextLen(plain, header); err != nil {
+		return mac, nil, err
+	}
 	out, err := EncryptThenMAC(key, plain)
 	if err != nil {
 		return mac, nil, err
